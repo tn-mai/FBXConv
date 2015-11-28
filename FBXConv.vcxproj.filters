@@ -1,0 +1,32 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Src">
+      <UniqueIdentifier>{e6580d3f-4f8e-47c6-ad2e-1499222c50f9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Common">
+      <UniqueIdentifier>{a5e43a43-6234-458b-aaf3-dbd5ca60c10e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="TestData">
+      <UniqueIdentifier>{adaa0cfb-571a-4105-bad3-af82107a6a4d}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Src\main.cxx">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\Common.cxx">
+      <Filter>Common</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Common\Common.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="TestData\block1.fbx">
+      <Filter>TestData</Filter>
+    </None>
+  </ItemGroup>
+</Project>
