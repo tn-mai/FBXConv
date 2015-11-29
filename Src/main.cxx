@@ -35,10 +35,11 @@
 //
 /////////////////////////////////////////////////////////////////////////
 
+#include "../Common/Common.h"
 #include <fbxsdk.h>
 #include <stdint.h>
-
-#include "../Common/Common.h"
+#include <vector>
+#include <algorithm>
 
 #define SAMPLE_FILENAME "TestData/block1.fbx"
 
@@ -46,12 +47,21 @@ namespace /* unnamed */ {
 
   struct Vector3 {
 	float x, y, z;
+	Vector3() {}
+	Vector3(const FbxVector4& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])) {}
+	Vector3& operator==(const FbxVector4& v) { *this = Vector3(v); return *this; }
   };
   struct Vector4 {
 	float x, y, z, w;
+	Vector4() {}
+	Vector4(const FbxVector4& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])), w(static_cast<float>(v[3])) {}
+	Vector4& operator==(const FbxVector4& v) { *this = Vector4(v); return *this; }
   };
   struct Position2 {
 	uint16_t u, v;
+	Position2() {}
+	Position2(const FbxVector2& v) : u(static_cast<uint16_t>(v[0] * 65535U)), v(static_cast<uint16_t>(v[1] * 65535U)) {}
+	Position2& operator==(const FbxVector2& v) { *this = Position2(v); return *this; }
   };
 
   struct Vertex {
@@ -64,6 +74,19 @@ namespace /* unnamed */ {
 
 	Vertex() {}
   };
+
+  constexpr bool operator==(const Vector3& lhs, const Vector3& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z; }
+  constexpr bool operator==(const Vector4& lhs, const Vector4& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w; }
+  constexpr bool operator==(const Position2& lhs, const Position2& rhs) { return lhs.u == rhs.u && lhs.v == rhs.v; }
+  constexpr bool operator==(const Vertex& lhs, const Vertex& rhs) {
+	return
+	  lhs.position == rhs.position &&
+	  lhs.weight[0] == rhs.weight[0] && lhs.weight[1] == rhs.weight[1] && lhs.weight[2] == rhs.weight[2] && lhs.weight[3] == rhs.weight[3] &&
+	  lhs.normal == rhs.normal &&
+	  lhs.boneID[0] == rhs.boneID[0] && lhs.boneID[1] == rhs.boneID[1] && lhs.boneID[2] == rhs.boneID[2] && lhs.boneID[3] == rhs.boneID[3] &&
+	  lhs.texCoord[0] == rhs.texCoord[0] && lhs.texCoord[1] == rhs.texCoord[1] &&
+	  lhs.tangent == rhs.tangent;
+  }
 } // unnamed namespace
 
 //set pCompute true to compute smoothing from normals by default 
@@ -86,6 +109,75 @@ struct TangentElementTypeInfo {
 };
 
 template<typename ElementTypeInfoT> void GetMeshElement(FbxMesh* lMesh);
+
+template<typename T>
+struct Element {
+  const FbxMesh* pm;
+  const T* p;
+  FbxGeometryElement::EMappingMode mappingMode;
+  FbxGeometryElement::EReferenceMode referenceMode;
+
+  Element(const FbxMesh* pMesh, const T* pElement) : pm(pMesh), p(pElement) {
+	mappingMode = p->GetMappingMode();
+	referenceMode = p->GetReferenceMode();
+  }
+  ~Element() {}
+
+  FbxVector4 Get(int polyIndex, int posInPoly) const {
+	switch (mappingMode) {
+	case FbxGeometryElement::eByControlPoint:
+	  return GetByControlPoint(polyIndex, posInPoly);
+	case FbxGeometryElement::eByPolygonVertex:
+	  return GetByPolygonVertex(polyIndex, posInPoly);
+	default:
+	  return FbxVector4(0, 0, 0, 1);
+	}
+  }
+
+private:
+  //Let's get element of target vertex, since the mapping mode of element is by control point
+  FbxVector4 GetByControlPoint(int polyIndex, int posInPoly) const {
+	const int lVertexIndex = pm->GetPolygonVertex(polyIndex, posInPoly);
+	int lNormalIndex;
+	switch (referenceMode) {
+	case FbxGeometryElement::eDirect:
+	  //reference mode is direct, the normal index is same as vertex index.
+	  //get normals by the index of control vertex
+	  lNormalIndex = lVertexIndex;
+	  break;
+	case FbxGeometryElement::eIndexToDirect:
+	  //reference mode is index-to-direct, get normals by the index-to-direct
+	  lNormalIndex = p->GetIndexArray().GetAt(lVertexIndex);
+	  break;
+	default:
+	  lNormalIndex = 0;
+	  break;
+	}
+	return p->GetDirectArray().GetAt(lNormalIndex);
+  }
+
+  //mapping mode is by polygon-vertex.
+  //we can get element by retrieving polygon-vertex.
+  FbxVector4 GetByPolygonVertex(int polyIndex, int posInPoly) const {
+	const int lIndexByPolygonVertex = polyIndex * 3 + posInPoly;
+	int lNormalIndex = 0;
+	switch (referenceMode) {
+	case FbxGeometryElement::eDirect:
+	  //reference mode is direct, the normal index is same as lIndexByPolygonVertex.
+	  lNormalIndex = lIndexByPolygonVertex;
+	  break;
+	case FbxGeometryElement::eIndexToDirect:
+	  //reference mode is index-to-direct, get normals by the index-to-direct
+	  lNormalIndex = p->GetIndexArray().GetAt(lIndexByPolygonVertex);
+	  break;
+	default:
+	  lNormalIndex = 0;
+	  break;
+	}
+	return p->GetDirectArray().GetAt(lNormalIndex);
+  }
+};
+typedef Element<FbxLayerElementTangent> TangentElement;
 
 static bool gVerbose = true;
 
@@ -254,13 +346,50 @@ void GetNormals(FbxNode* pNode)
 
     //get mesh
     FbxMesh* lMesh = pNode->GetMesh();
-    if(lMesh)
-	{
-        //print mesh node name
-        FBXSDK_printf("current mesh node: %s\n", pNode->GetName());
-		GetMeshElement<NormalElementTypeInfo>(lMesh);
-		GetMeshElement<TangentElementTypeInfo>(lMesh);
-	}//end if lMesh
+	if (lMesh) {
+	  //print mesh node name
+	  FBXSDK_printf("current mesh node: %s\n", pNode->GetName());
+//	  GetMeshElement<NormalElementTypeInfo>(lMesh);
+//	  GetMeshElement<TangentElementTypeInfo>(lMesh);
+
+	  std::vector<Vertex> vbo;
+	  std::vector<uint16_t> ibo;
+
+	  FbxStringList UVSetNameList;
+	  lMesh->GetUVSetNames(UVSetNameList);
+	  const FbxLayerElementTangent* pTangentList = lMesh->GetElementTangent(0);
+	  const TangentElement tangentList(lMesh, lMesh->GetElementTangent(0));
+	  const int count = lMesh->GetPolygonCount();
+	  for (int i = 0; i < count; ++i) {
+		for (int pos = 0; pos < 3; ++pos) {
+		  const int index = lMesh->GetPolygonVertex(i, pos);
+		  Vertex v;
+		  const FbxVector4 vPosition = lMesh->GetControlPointAt(index);
+		  v.position = vPosition;
+		  FbxVector4 vNormal;
+		  lMesh->GetPolygonVertexNormal(i, pos, vNormal);
+		  v.normal = vNormal;
+		  FbxVector2 vTexCoord;
+		  bool unmapped;
+		  lMesh->GetPolygonVertexUV(i, pos, UVSetNameList[0], vTexCoord, unmapped);
+		  v.texCoord[0] = vTexCoord;
+		  v.texCoord[1] = v.texCoord[0];
+		  const FbxVector4 vTangent = tangentList.Get(i, pos);
+		  v.tangent = vTangent;
+
+		  v.boneID[0] = v.boneID[1] = v.boneID[2] = v.boneID[3] = 0;
+		  v.weight[0] = 255; v.weight[1] = v.weight[2] = v.weight[3] = 0;
+
+		  auto itr = std::find(vbo.begin(), vbo.end(), v);
+		  if (itr == vbo.end()) {
+			ibo.push_back(static_cast<uint16_t>(vbo.size()));
+			vbo.push_back(v);
+		  } else {
+			ibo.push_back(itr - vbo.begin());
+		  }
+		}
+	  }
+	}
 
     //recursively traverse each node in the scene
     int i, lCount = pNode->GetChildCount();
