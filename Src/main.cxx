@@ -345,47 +345,48 @@ void GetNormals(FbxNode* pNode)
         return;
 
     //get mesh
-    FbxMesh* lMesh = pNode->GetMesh();
+    const FbxMesh* lMesh = pNode->GetMesh();
 	if (lMesh) {
-	  //print mesh node name
-	  FBXSDK_printf("current mesh node: %s\n", pNode->GetName());
-//	  GetMeshElement<NormalElementTypeInfo>(lMesh);
-//	  GetMeshElement<TangentElementTypeInfo>(lMesh);
+	  if (const auto pElement = lMesh->GetElementTangent()) {
+		//print mesh node name
+		FBXSDK_printf("current mesh node: %s\n", pNode->GetName());
+		//	  GetMeshElement<NormalElementTypeInfo>(lMesh);
+		//	  GetMeshElement<TangentElementTypeInfo>(lMesh);
 
-	  std::vector<Vertex> vbo;
-	  std::vector<uint16_t> ibo;
+		std::vector<Vertex> vbo;
+		std::vector<uint16_t> ibo;
 
-	  FbxStringList UVSetNameList;
-	  lMesh->GetUVSetNames(UVSetNameList);
-	  const FbxLayerElementTangent* pTangentList = lMesh->GetElementTangent(0);
-	  const TangentElement tangentList(lMesh, lMesh->GetElementTangent(0));
-	  const int count = lMesh->GetPolygonCount();
-	  for (int i = 0; i < count; ++i) {
-		for (int pos = 0; pos < 3; ++pos) {
-		  const int index = lMesh->GetPolygonVertex(i, pos);
-		  Vertex v;
-		  const FbxVector4 vPosition = lMesh->GetControlPointAt(index);
-		  v.position = vPosition;
-		  FbxVector4 vNormal;
-		  lMesh->GetPolygonVertexNormal(i, pos, vNormal);
-		  v.normal = vNormal;
-		  FbxVector2 vTexCoord;
-		  bool unmapped;
-		  lMesh->GetPolygonVertexUV(i, pos, UVSetNameList[0], vTexCoord, unmapped);
-		  v.texCoord[0] = vTexCoord;
-		  v.texCoord[1] = v.texCoord[0];
-		  const FbxVector4 vTangent = tangentList.Get(i, pos);
-		  v.tangent = vTangent;
+		FbxStringList UVSetNameList;
+		lMesh->GetUVSetNames(UVSetNameList);
+		const TangentElement tangentList(lMesh, pElement);
+		const int count = lMesh->GetPolygonCount();
+		for (int i = 0; i < count; ++i) {
+		  for (int pos = 0; pos < 3; ++pos) {
+			const int index = lMesh->GetPolygonVertex(i, pos);
+			Vertex v;
+			const FbxVector4 vPosition = lMesh->GetControlPointAt(index);
+			v.position = vPosition;
+			FbxVector4 vNormal;
+			lMesh->GetPolygonVertexNormal(i, pos, vNormal);
+			v.normal = vNormal;
+			FbxVector2 vTexCoord;
+			bool unmapped;
+			lMesh->GetPolygonVertexUV(i, pos, UVSetNameList[0], vTexCoord, unmapped);
+			v.texCoord[0] = vTexCoord;
+			v.texCoord[1] = v.texCoord[0];
+			const FbxVector4 vTangent = tangentList.Get(i, pos);
+			v.tangent = vTangent;
 
-		  v.boneID[0] = v.boneID[1] = v.boneID[2] = v.boneID[3] = 0;
-		  v.weight[0] = 255; v.weight[1] = v.weight[2] = v.weight[3] = 0;
+			v.boneID[0] = v.boneID[1] = v.boneID[2] = v.boneID[3] = 0;
+			v.weight[0] = 255; v.weight[1] = v.weight[2] = v.weight[3] = 0;
 
-		  auto itr = std::find(vbo.begin(), vbo.end(), v);
-		  if (itr == vbo.end()) {
-			ibo.push_back(static_cast<uint16_t>(vbo.size()));
-			vbo.push_back(v);
-		  } else {
-			ibo.push_back(itr - vbo.begin());
+			auto itr = std::find(vbo.begin(), vbo.end(), v);
+			if (itr == vbo.end()) {
+			  ibo.push_back(static_cast<uint16_t>(vbo.size()));
+			  vbo.push_back(v);
+			} else {
+			  ibo.push_back(itr - vbo.begin());
+			}
 		  }
 		}
 	  }
