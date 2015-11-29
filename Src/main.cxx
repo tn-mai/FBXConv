@@ -36,10 +36,35 @@
 /////////////////////////////////////////////////////////////////////////
 
 #include <fbxsdk.h>
+#include <stdint.h>
 
 #include "../Common/Common.h"
 
 #define SAMPLE_FILENAME "TestData/block1.fbx"
+
+namespace /* unnamed */ {
+
+  struct Vector3 {
+	float x, y, z;
+  };
+  struct Vector4 {
+	float x, y, z, w;
+  };
+  struct Position2 {
+	uint16_t u, v;
+  };
+
+  struct Vertex {
+	Vector3    position; ///< 頂点座標. 12
+	uint8_t    weight[4]; ///< 頂点ブレンディングの重み. 0-255 = 0.0-1.0として量子化した値を格納する. 4
+	Vector3    normal; ///< 頂点ノーマル. 12
+	uint8_t    boneID[4]; ///< 頂点ブレンディングのボーンID. 4
+	Position2  texCoord[2]; ///< ディフューズ(withメタルネス)マップ座標, ノーマル(withラフネス)マップ座標. 8
+	Vector4    tangent; ///< 頂点タンジェント. 16
+
+	Vertex() {}
+  };
+} // unnamed namespace
 
 //set pCompute true to compute smoothing from normals by default 
 //set pConvertToSmoothingGroup true to convert hard/soft edge info to smoothing group info by default
