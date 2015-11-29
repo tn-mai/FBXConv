@@ -360,6 +360,8 @@ void GetNormals(FbxNode* pNode)
 		lMesh->GetUVSetNames(UVSetNameList);
 		const TangentElement tangentList(lMesh, pElement);
 		const int count = lMesh->GetPolygonCount();
+		vbo.reserve(count * 3);
+		ibo.reserve(count * 3);
 		for (int i = 0; i < count; ++i) {
 		  for (int pos = 0; pos < 3; ++pos) {
 			const int index = lMesh->GetPolygonVertex(i, pos);
