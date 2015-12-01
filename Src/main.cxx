@@ -256,6 +256,11 @@ namespace /* unnamed */ {
 	for (auto& i : ibo) { Output(ofs, i); }
 	ofs.close();
   }
+
+  std::string GetOutputFilename(const char* inputfilename) {
+	std::string s(inputfilename);
+	return s.substr(0, s.find_last_of('.')) + ".msh";
+  }
 } // unnamed namespace
 
 static bool gVerbose = true;
@@ -314,7 +319,8 @@ int main(int argc, char** argv)
         GetSmoothing(lSdkManager, lRootNode, lComputeFromNormals, lConvertToSmoothingGroup);
 
 		if (!meshList.empty()) {
-		  Output("test.msh");
+		  const std::string s = GetOutputFilename(lFilePath.Buffer());
+		  Output(s.c_str());
 		}
     }
 
