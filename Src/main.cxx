@@ -40,10 +40,21 @@
 #include <stdint.h>
 #include <vector>
 #include <algorithm>
+#include <numeric>
+#include <fstream>
 
 #define SAMPLE_FILENAME "TestData/block1.fbx"
 
 namespace /* unnamed */ {
+
+  template<typename T>
+  std::ofstream& Output(std::ofstream& ofs, T value) {
+	const unsigned char* p = reinterpret_cast<unsigned char*>(&value);
+	for (int i = 0; i < sizeof(T); ++i) {
+	  ofs << p[i];
+	}
+	return ofs;
+  }
 
   struct Vector3 {
 	float x, y, z;
@@ -86,6 +97,25 @@ namespace /* unnamed */ {
 	  lhs.boneID[0] == rhs.boneID[0] && lhs.boneID[1] == rhs.boneID[1] && lhs.boneID[2] == rhs.boneID[2] && lhs.boneID[3] == rhs.boneID[3] &&
 	  lhs.texCoord[0] == rhs.texCoord[0] && lhs.texCoord[1] == rhs.texCoord[1] &&
 	  lhs.tangent == rhs.tangent;
+  }
+  std::ofstream& operator<<(std::ofstream& ofs, const Vertex& v) {
+	Output(ofs, v.position.x);
+	Output(ofs, v.position.y);
+	Output(ofs, v.position.z);
+	ofs << v.weight[0] << v.weight[1] << v.weight[2] << v.weight[3];
+	Output(ofs, v.normal.x);
+	Output(ofs, v.normal.y);
+	Output(ofs, v.normal.z);
+	ofs << v.boneID[0] << v.boneID[1] << v.boneID[2] << v.boneID[3];
+	Output(ofs, v.texCoord[0].u);
+	Output(ofs, v.texCoord[0].v);
+	Output(ofs, v.texCoord[1].u);
+	Output(ofs, v.texCoord[1].v);
+	Output(ofs, v.tangent.x);
+	Output(ofs, v.tangent.y);
+	Output(ofs, v.tangent.z);
+	Output(ofs, v.tangent.w);
+	return ofs;
   }
 
   struct NormalElementTypeInfo {
@@ -171,7 +201,20 @@ namespace /* unnamed */ {
   };
   typedef Element<FbxLayerElementTangent> TangentElement;
 
-  /** the output file format
+  struct Mesh {
+	uint32_t iboOffset;
+	uint32_t iboSize;
+	uint8_t nameLength;
+	char name[55];
+	size_t RawSize() const { return sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + nameLength; }
+	size_t Size() const { return (RawSize() + 3UL) & ~3UL; }
+  };
+
+  std::vector<Mesh> meshList;
+  std::vector<Vertex> vbo;
+  std::vector<uint16_t> ibo;
+
+  /** the output file format.
 
   the endianness is little endian.
 
@@ -181,27 +224,38 @@ namespace /* unnamed */ {
   uint32_t          vbo byte size(32bit alignment).
   uint32_t          ibo byte size(32bit alignment).
   [
-    uint32_t        ibo offset.
-    uint32_t        ibo size.
-    uint8_t         mesh name length.
-    char[length]    mesh name.
-    padding         (4 - (length + 1) % 4) % 4 byte.
+  uint32_t        ibo offset.
+  uint32_t        ibo size.
+  uint8_t         mesh name length.
+  char[length]    mesh name.
+  padding         (4 - (length + 1) % 4) % 4 byte.
   ] x (mesh count)
   vbo               vbo data.
   ibo               ibo data.
   */
-
-  struct Mesh {
-	uint32_t iboOffset;
-	uint32_t iboSize;
-	uint8_t nameLength;
-	char name[55];
-  };
-
-  std::vector<Mesh> meshList;
-  std::vector<Vertex> vbo;
-  std::vector<uint16_t> ibo;
-
+  void Output(const char* filename) {
+	std::ofstream ofs(filename, std::ios_base::binary);
+	ofs << 'M' << 'S' << 'H';
+	ofs << static_cast<uint8_t>(meshList.size());
+	const size_t n = std::accumulate(meshList.begin(), meshList.end(), 0UL, [](size_t acc, const Mesh& m) { return acc + m.Size(); });
+	Output(ofs, static_cast<uint32_t>(n + 16));
+	Output(ofs, static_cast<uint32_t>(vbo.size() * sizeof(Vertex)));
+	Output(ofs, static_cast<uint32_t>(ibo.size() * sizeof(uint16_t)));
+	for (const Mesh& m : meshList) {
+	  Output(ofs, m.iboOffset);
+	  Output(ofs, m.iboSize);
+	  Output(ofs, m.nameLength);
+	  for (uint8_t i = 0; i < m.nameLength; ++i) {
+		ofs << m.name[i];
+	  }
+	  for (size_t i = m.RawSize(); i < m.Size(); ++i) {
+		ofs << '\0';
+	  }
+	}
+	for (auto& v : vbo) { ofs << v; }
+	for (auto& i : ibo) { Output(ofs, i); }
+	ofs.close();
+  }
 } // unnamed namespace
 
 static bool gVerbose = true;
@@ -258,6 +312,10 @@ int main(int argc, char** argv)
         bool lConvertToSmoothingGroup = false;
         //get smoothing info, if there're mesh in the scene
         GetSmoothing(lSdkManager, lRootNode, lComputeFromNormals, lConvertToSmoothingGroup);
+
+		if (!meshList.empty()) {
+		  Output("test.msh");
+		}
     }
 
     //Destroy all objects created by the FBX SDK.
@@ -387,7 +445,7 @@ void GetNormals(FbxNode* pNode)
 
 		Mesh mesh = { 0 };
 		mesh.iboOffset = ibo.size() * sizeof(uint16_t);
-		mesh.nameLength = std::strlen(pNode->GetName());
+		mesh.nameLength = static_cast<uint8_t>(std::strlen(pNode->GetName()));
 		if (mesh.nameLength > 23) {
 		  mesh.nameLength = 23;
 		}
