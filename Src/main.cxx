@@ -87,7 +87,124 @@ namespace /* unnamed */ {
 	  lhs.texCoord[0] == rhs.texCoord[0] && lhs.texCoord[1] == rhs.texCoord[1] &&
 	  lhs.tangent == rhs.tangent;
   }
+
+  struct NormalElementTypeInfo {
+	typedef FbxGeometryElementNormal Type;
+	static Type* Get(FbxMesh* p) { return p->GetElementNormal(); }
+	static const char* Name() { return "normal"; }
+  };
+
+  struct TangentElementTypeInfo {
+	typedef FbxGeometryElementTangent Type;
+	static Type* Get(FbxMesh* p) { return p->GetElementTangent(); }
+	static const char* Name() { return "tangent"; }
+  };
+
+  template<typename ElementTypeInfoT> void GetMeshElement(FbxMesh* lMesh);
+
+  template<typename T>
+  struct Element {
+	const FbxMesh* pm;
+	const T* p;
+	FbxGeometryElement::EMappingMode mappingMode;
+	FbxGeometryElement::EReferenceMode referenceMode;
+
+	Element(const FbxMesh* pMesh, const T* pElement) : pm(pMesh), p(pElement) {
+	  mappingMode = p->GetMappingMode();
+	  referenceMode = p->GetReferenceMode();
+	}
+	~Element() {}
+
+	FbxVector4 Get(int polyIndex, int posInPoly) const {
+	  switch (mappingMode) {
+	  case FbxGeometryElement::eByControlPoint:
+		return GetByControlPoint(polyIndex, posInPoly);
+	  case FbxGeometryElement::eByPolygonVertex:
+		return GetByPolygonVertex(polyIndex, posInPoly);
+	  default:
+		return FbxVector4(0, 0, 0, 1);
+	  }
+	}
+
+  private:
+	//Let's get element of target vertex, since the mapping mode of element is by control point
+	FbxVector4 GetByControlPoint(int polyIndex, int posInPoly) const {
+	  const int lVertexIndex = pm->GetPolygonVertex(polyIndex, posInPoly);
+	  int lNormalIndex;
+	  switch (referenceMode) {
+	  case FbxGeometryElement::eDirect:
+		//reference mode is direct, the normal index is same as vertex index.
+		//get normals by the index of control vertex
+		lNormalIndex = lVertexIndex;
+		break;
+	  case FbxGeometryElement::eIndexToDirect:
+		//reference mode is index-to-direct, get normals by the index-to-direct
+		lNormalIndex = p->GetIndexArray().GetAt(lVertexIndex);
+		break;
+	  default:
+		lNormalIndex = 0;
+		break;
+	  }
+	  return p->GetDirectArray().GetAt(lNormalIndex);
+	}
+
+	//mapping mode is by polygon-vertex.
+	//we can get element by retrieving polygon-vertex.
+	FbxVector4 GetByPolygonVertex(int polyIndex, int posInPoly) const {
+	  const int lIndexByPolygonVertex = polyIndex * 3 + posInPoly;
+	  int lNormalIndex = 0;
+	  switch (referenceMode) {
+	  case FbxGeometryElement::eDirect:
+		//reference mode is direct, the normal index is same as lIndexByPolygonVertex.
+		lNormalIndex = lIndexByPolygonVertex;
+		break;
+	  case FbxGeometryElement::eIndexToDirect:
+		//reference mode is index-to-direct, get normals by the index-to-direct
+		lNormalIndex = p->GetIndexArray().GetAt(lIndexByPolygonVertex);
+		break;
+	  default:
+		lNormalIndex = 0;
+		break;
+	  }
+	  return p->GetDirectArray().GetAt(lNormalIndex);
+	}
+  };
+  typedef Element<FbxLayerElementTangent> TangentElement;
+
+  /** the output file format
+
+  the endianness is little endian.
+
+  char[3]           "MSH"
+  uint8_t           mesh count.
+  uint32_t          vbo offset by the top of file(32bit alignment).
+  uint32_t          vbo byte size(32bit alignment).
+  uint32_t          ibo byte size(32bit alignment).
+  [
+    uint32_t        ibo offset.
+    uint32_t        ibo size.
+    uint8_t         mesh name length.
+    char[length]    mesh name.
+    padding         (4 - (length + 1) % 4) % 4 byte.
+  ] x (mesh count)
+  vbo               vbo data.
+  ibo               ibo data.
+  */
+
+  struct Mesh {
+	uint32_t iboOffset;
+	uint32_t iboSize;
+	uint8_t nameLength;
+	char name[55];
+  };
+
+  std::vector<Mesh> meshList;
+  std::vector<Vertex> vbo;
+  std::vector<uint16_t> ibo;
+
 } // unnamed namespace
+
+static bool gVerbose = true;
 
 //set pCompute true to compute smoothing from normals by default 
 //set pConvertToSmoothingGroup true to convert hard/soft edge info to smoothing group info by default
@@ -95,91 +212,6 @@ void GetSmoothing(FbxManager* pSdkManager, FbxNode* pNode, bool pCompute = false
 
 //get mesh normals info
 void GetNormals(FbxNode* pNode);
-
-struct NormalElementTypeInfo {
-  typedef FbxGeometryElementNormal Type;
-  static Type* Get(FbxMesh* p) { return p->GetElementNormal(); }
-  static const char* Name() { return "normal"; }
-};
-
-struct TangentElementTypeInfo {
-  typedef FbxGeometryElementTangent Type;
-  static Type* Get(FbxMesh* p) { return p->GetElementTangent(); }
-  static const char* Name() { return "tangent"; }
-};
-
-template<typename ElementTypeInfoT> void GetMeshElement(FbxMesh* lMesh);
-
-template<typename T>
-struct Element {
-  const FbxMesh* pm;
-  const T* p;
-  FbxGeometryElement::EMappingMode mappingMode;
-  FbxGeometryElement::EReferenceMode referenceMode;
-
-  Element(const FbxMesh* pMesh, const T* pElement) : pm(pMesh), p(pElement) {
-	mappingMode = p->GetMappingMode();
-	referenceMode = p->GetReferenceMode();
-  }
-  ~Element() {}
-
-  FbxVector4 Get(int polyIndex, int posInPoly) const {
-	switch (mappingMode) {
-	case FbxGeometryElement::eByControlPoint:
-	  return GetByControlPoint(polyIndex, posInPoly);
-	case FbxGeometryElement::eByPolygonVertex:
-	  return GetByPolygonVertex(polyIndex, posInPoly);
-	default:
-	  return FbxVector4(0, 0, 0, 1);
-	}
-  }
-
-private:
-  //Let's get element of target vertex, since the mapping mode of element is by control point
-  FbxVector4 GetByControlPoint(int polyIndex, int posInPoly) const {
-	const int lVertexIndex = pm->GetPolygonVertex(polyIndex, posInPoly);
-	int lNormalIndex;
-	switch (referenceMode) {
-	case FbxGeometryElement::eDirect:
-	  //reference mode is direct, the normal index is same as vertex index.
-	  //get normals by the index of control vertex
-	  lNormalIndex = lVertexIndex;
-	  break;
-	case FbxGeometryElement::eIndexToDirect:
-	  //reference mode is index-to-direct, get normals by the index-to-direct
-	  lNormalIndex = p->GetIndexArray().GetAt(lVertexIndex);
-	  break;
-	default:
-	  lNormalIndex = 0;
-	  break;
-	}
-	return p->GetDirectArray().GetAt(lNormalIndex);
-  }
-
-  //mapping mode is by polygon-vertex.
-  //we can get element by retrieving polygon-vertex.
-  FbxVector4 GetByPolygonVertex(int polyIndex, int posInPoly) const {
-	const int lIndexByPolygonVertex = polyIndex * 3 + posInPoly;
-	int lNormalIndex = 0;
-	switch (referenceMode) {
-	case FbxGeometryElement::eDirect:
-	  //reference mode is direct, the normal index is same as lIndexByPolygonVertex.
-	  lNormalIndex = lIndexByPolygonVertex;
-	  break;
-	case FbxGeometryElement::eIndexToDirect:
-	  //reference mode is index-to-direct, get normals by the index-to-direct
-	  lNormalIndex = p->GetIndexArray().GetAt(lIndexByPolygonVertex);
-	  break;
-	default:
-	  lNormalIndex = 0;
-	  break;
-	}
-	return p->GetDirectArray().GetAt(lNormalIndex);
-  }
-};
-typedef Element<FbxLayerElementTangent> TangentElement;
-
-static bool gVerbose = true;
 
 int main(int argc, char** argv)
 {
@@ -353,15 +385,20 @@ void GetNormals(FbxNode* pNode)
 		//	  GetMeshElement<NormalElementTypeInfo>(lMesh);
 		//	  GetMeshElement<TangentElementTypeInfo>(lMesh);
 
-		std::vector<Vertex> vbo;
-		std::vector<uint16_t> ibo;
+		Mesh mesh = { 0 };
+		mesh.iboOffset = ibo.size() * sizeof(uint16_t);
+		mesh.nameLength = std::strlen(pNode->GetName());
+		if (mesh.nameLength > 23) {
+		  mesh.nameLength = 23;
+		}
+		std::copy(pNode->GetName(), pNode->GetName() + mesh.nameLength, mesh.name);
 
 		FbxStringList UVSetNameList;
 		lMesh->GetUVSetNames(UVSetNameList);
 		const TangentElement tangentList(lMesh, pElement);
 		const int count = lMesh->GetPolygonCount();
-		vbo.reserve(count * 3);
-		ibo.reserve(count * 3);
+		vbo.reserve(vbo.size() + count * 3);
+		ibo.reserve(ibo.size() + count * 3);
 		for (int i = 0; i < count; ++i) {
 		  for (int pos = 0; pos < 3; ++pos) {
 			const int index = lMesh->GetPolygonVertex(i, pos);
@@ -391,6 +428,8 @@ void GetNormals(FbxNode* pNode)
 			}
 		  }
 		}
+		mesh.iboSize = ibo.size() - mesh.iboOffset / sizeof(uint16_t);
+		meshList.push_back(mesh);
 	  }
 	}
 
