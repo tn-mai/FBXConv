@@ -59,12 +59,14 @@ namespace /* unnamed */ {
   struct Vector3 {
 	float x, y, z;
 	Vector3() {}
+	Vector3(float xx, float yy, float zz) : x(xx), y(yy), z(zz) {}
 	Vector3(const FbxVector4& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])) {}
 	Vector3& operator==(const FbxVector4& v) { *this = Vector3(v); return *this; }
   };
   struct Vector4 {
 	float x, y, z, w;
 	Vector4() {}
+	Vector4(float xx, float yy, float zz, float ww) : x(xx), y(yy), z(zz), w(ww) {}
 	Vector4(const FbxVector4& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])), w(static_cast<float>(v[3])) {}
 	Vector4& operator==(const FbxVector4& v) { *this = Vector4(v); return *this; }
   };
@@ -74,6 +76,17 @@ namespace /* unnamed */ {
 	Position2(const FbxVector2& v) : u(static_cast<uint16_t>(v[0] * 65535U)), v(static_cast<uint16_t>(v[1] * 65535U)) {}
 	Position2& operator==(const FbxVector2& v) { *this = Position2(v); return *this; }
   };
+
+  Vector3 Cross(const Vector3& lhs, const Vector3& rhs) {
+	return Vector3(lhs.y * rhs.z - lhs.z * rhs.y, lhs.z * rhs.x - lhs.x * rhs.z, lhs.x * rhs.y - lhs.y * rhs.x);
+  }
+  float Dot(const Vector3& lhs, const Vector3& rhs) {
+	return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+  }
+  Vector3 Normalize(const Vector3& v) {
+	const float invNorm = 1.0f / std::sqrt(Dot(v, v));
+	return Vector3(v.x * invNorm, v.y * invNorm, v.z * invNorm);
+  }
 
   struct Vertex {
 	Vector3    position; ///< ’¸“_À•W. 12
@@ -200,6 +213,7 @@ namespace /* unnamed */ {
 	}
   };
   typedef Element<FbxLayerElementTangent> TangentElement;
+//  typedef Element<FbxLayerElementBinormal> BinormalElement;
 
   struct Mesh {
 	uint32_t iboOffset;
@@ -296,7 +310,7 @@ int main(int argc, char** argv)
 
     if(lResult == false)
     {
-        FBXSDK_printf("\n\nAn error occurred while loading the scene...");        
+        FBXSDK_printf("\n\nAn error occurred while loading the scene...");
     }
     else 
     {
@@ -457,9 +471,11 @@ void GetNormals(FbxNode* pNode)
 		}
 		std::copy(pNode->GetName(), pNode->GetName() + mesh.nameLength, mesh.name);
 
+		FBXSDK_printf("tangent:\n");
 		FbxStringList UVSetNameList;
 		lMesh->GetUVSetNames(UVSetNameList);
 		const TangentElement tangentList(lMesh, pElement);
+//		const BinormalElement binormalList(lMesh, lMesh->GetElementBinormal());
 		const int count = lMesh->GetPolygonCount();
 		vbo.reserve(vbo.size() + count * 3);
 		ibo.reserve(ibo.size() + count * 3);
@@ -467,19 +483,36 @@ void GetNormals(FbxNode* pNode)
 		  for (int pos = 0; pos < 3; ++pos) {
 			const int index = lMesh->GetPolygonVertex(i, pos);
 			Vertex v;
-			const FbxVector4 vPosition = lMesh->GetControlPointAt(index);
-			v.position = vPosition;
+			v.position = lMesh->GetControlPointAt(index);
+			v.position = Vector3(v.position.x, v.position.z, -v.position.y);
 			FbxVector4 vNormal;
 			lMesh->GetPolygonVertexNormal(i, pos, vNormal);
 			v.normal = vNormal;
+			v.normal = Vector3(v.normal.x, v.normal.z, -v.normal.y);
 			FbxVector2 vTexCoord;
 			bool unmapped;
 			lMesh->GetPolygonVertexUV(i, pos, UVSetNameList[0], vTexCoord, unmapped);
 			v.texCoord[0] = vTexCoord;
 			v.texCoord[1] = v.texCoord[0];
-			const FbxVector4 vTangent = tangentList.Get(i, pos);
-			v.tangent = vTangent;
-
+			v.tangent = tangentList.Get(i, pos);
+#if 1
+			v.tangent = Vector4(v.tangent.x, v.tangent.z, -v.tangent.y, 1.0f);
+			if (v.normal.y > 0.9f) {
+			  v.tangent.w = -1.0f;
+			}
+//			Vector3 b = binormalList.Get(i, pos);
+//			b.y *= -1.0f;
+//			const Vector3 b2 = Normalize(Cross(v.normal, Vector3(v.tangent.x, v.tangent.y, v.tangent.z)));
+//			if (Dot(b, b2) < 0.0f) {
+//			  v.tangent.w = -1.0f;
+//			}
+#else
+			v.tangent = Vector4(-v.tangent.x, v.tangent.z, -v.tangent.y, v.tangent.w);
+			const Vector3 t(v.tangent.x, v.tangent.y, v.tangent.z);
+			Vector3 b = binormalList.Get(i, pos);
+			b = Vector3(-b.x, b.z, -b.y);
+			v.tangent.w = Dot(Cross(t, b), b) < 0.0f ? -1.0f : 1.0f;
+#endif
 			v.boneID[0] = v.boneID[1] = v.boneID[2] = v.boneID[3] = 0;
 			v.weight[0] = 255; v.weight[1] = v.weight[2] = v.weight[3] = 0;
 
