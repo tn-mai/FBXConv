@@ -274,6 +274,26 @@ namespace /* unnamed */ {
 	  for (const auto& e : weightList) {
 		result[e.vertexIndex].Add(e.boneIndex, e.weight);
 	  }
+	  for (auto& e : result) {
+		float totalWeight = 0.0f;
+		for (int i = 0; i < 4; ++i) {
+		  totalWeight += e.weight[i];
+		}
+		if (totalWeight > FLT_EPSILON) {
+		  for (int i = 0; i < 4; ++i) {
+			e.weight[i] /= totalWeight;
+			e.weight[i] *= 255.0f;
+		  }
+		  int a = std::accumulate(e.weight, e.weight + 4, 0, [](int sum, float e) { return sum + static_cast<int>(e); });
+		  for (; a < 255; ++a) {
+			float dummy;
+			const int i0 = std::modf(e.weight[0], &dummy) >= std::modf(e.weight[1], &dummy) ? 0 : 1;
+			const int i1 = std::modf(e.weight[2], &dummy) >= std::modf(e.weight[3], &dummy) ? 2 : 3;
+			const int i2 = std::modf(e.weight[i0], &dummy) >= std::modf(e.weight[i1], &dummy) ? i0 : i1;
+			e.weight[i2] = std::floor(e.weight[i2]) + 1.0f;
+		  }
+		}
+	  }
 	}
 	return result;
   }
