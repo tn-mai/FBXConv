@@ -215,6 +215,28 @@ namespace /* unnamed */ {
   typedef Element<FbxLayerElementTangent> TangentElement;
 //  typedef Element<FbxLayerElementBinormal> BinormalElement;
 
+  struct BoneWeightInfo {
+	BoneWeightInfo(int vi, int bi, float w) : vertexIndex(static_cast<uint16_t>(vi)), boneIndex(static_cast<uint16_t>(bi)), weight(w) {}
+	uint16_t vertexIndex;
+	uint16_t boneIndex;
+	float weight;
+  };
+
+  struct BoneWeight {
+	BoneWeight() : boneIndex{ -1, -1, -1, -1 }, weight{ 0, 0, 0, 0 } {}
+	void Add(int index, float w) {
+	  for (int i = 0; i < 4; ++i) {
+		if (boneIndex[i] == -1) {
+		  boneIndex[i] = index;
+		  weight[i] = w;
+		  break;
+		}
+	  }
+	}
+	int boneIndex[4];
+	float weight[4];
+  };
+
   struct Mesh {
 	uint32_t iboOffset;
 	uint32_t iboSize;
@@ -227,6 +249,34 @@ namespace /* unnamed */ {
   std::vector<Mesh> meshList;
   std::vector<Vertex> vbo;
   std::vector<uint16_t> ibo;
+
+  /** get the weight of the bones at the vertex index.
+  */
+  std::vector<BoneWeight> GetBoneWeightList(const FbxMesh* pMesh) {
+	std::vector<BoneWeight> result;
+	const int count = pMesh->GetDeformerCount(FbxDeformer::eSkin);
+	if (count) {
+	  const FbxSkin* pSkin = static_cast<const FbxSkin*>(pMesh->GetDeformer(0, FbxDeformer::eSkin));
+	  const int boneCount = pSkin->GetClusterCount();
+	  std::vector<BoneWeightInfo> weightList;
+	  weightList.reserve(static_cast<size_t>(pMesh->GetPolygonCount() * 3));
+	  for (int boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
+		const FbxCluster* pCluster = pSkin->GetCluster(boneIndex);
+		const int pointCount = pCluster->GetControlPointIndicesCount();
+		const int* pVertexIndices = pCluster->GetControlPointIndices();
+		const double* pWeights = pCluster->GetControlPointWeights();
+		for (int j = 0; j < pointCount; ++j) {
+		  weightList.push_back(BoneWeightInfo(pVertexIndices[j], boneIndex, static_cast<float>(pWeights[j])));
+		}
+	  }
+	  std::sort(weightList.begin(), weightList.end(), [](const BoneWeightInfo& lhs, const BoneWeightInfo& rhs) { return lhs.vertexIndex < rhs.vertexIndex; });
+	  result.resize(weightList.back().vertexIndex + 1);
+	  for (const auto& e : weightList) {
+		result[e.vertexIndex].Add(e.boneIndex, e.weight);
+	  }
+	}
+	return result;
+  }
 
   /** the output file format.
 
@@ -460,6 +510,8 @@ void Convert(FbxNode* pNode)
 	  if (const auto pElement = lMesh->GetElementTangent()) {
 		//print mesh node name
 		FBXSDK_printf("current mesh node: %s\n", pNode->GetName());
+
+		std::vector<BoneWeight> boneWeightList = GetBoneWeightList(lMesh);
 
 		Mesh mesh = { 0 };
 		mesh.iboOffset = ibo.size() * sizeof(uint16_t);
