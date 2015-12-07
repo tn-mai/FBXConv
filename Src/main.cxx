@@ -531,7 +531,7 @@ void Convert(FbxNode* pNode)
 		//print mesh node name
 		FBXSDK_printf("current mesh node: %s\n", pNode->GetName());
 
-		std::vector<BoneWeight> boneWeightList = GetBoneWeightList(lMesh);
+		const std::vector<BoneWeight> boneWeightList = GetBoneWeightList(lMesh);
 
 		Mesh mesh = { 0 };
 		mesh.iboOffset = ibo.size() * sizeof(uint16_t);
@@ -583,8 +583,16 @@ void Convert(FbxNode* pNode)
 			b = Vector3(-b.x, b.z, -b.y);
 			v.tangent.w = Dot(Cross(t, b), b) < 0.0f ? -1.0f : 1.0f;
 #endif
-			v.boneID[0] = v.boneID[1] = v.boneID[2] = v.boneID[3] = 0;
-			v.weight[0] = 255; v.weight[1] = v.weight[2] = v.weight[3] = 0;
+			if (index < boneWeightList.size()) {
+			  const BoneWeight& weightData = boneWeightList[index];
+			  for (int i = 0; i < 4; ++i) {
+				v.boneID[i] = static_cast<uint8_t>(weightData.boneIndex[i] != -1 ? weightData.boneIndex[i] : 0);
+				v.weight[i] = static_cast<uint8_t>(weightData.weight[i]);
+			  }
+			} else {
+			  v.boneID[0] = v.boneID[1] = v.boneID[2] = v.boneID[3] = 0;
+			  v.weight[0] = 255; v.weight[1] = v.weight[2] = v.weight[3] = 0;
+			}
 
 			auto itr = std::find(vbo.begin(), vbo.end(), v);
 			if (itr == vbo.end()) {
