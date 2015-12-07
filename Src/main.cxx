@@ -284,7 +284,7 @@ static bool gVerbose = true;
 void GetSmoothing(FbxManager* pSdkManager, FbxNode* pNode, bool pCompute = false, bool pConvertToSmoothingGroup = false);
 
 //get mesh normals info
-void GetNormals(FbxNode* pNode);
+void Convert(FbxNode* pNode);
 
 int main(int argc, char** argv)
 {
@@ -323,7 +323,7 @@ int main(int argc, char** argv)
         FbxNode* lRootNode = lScene->GetRootNode();
 
         //get normals info, if there're mesh in the scene
-        GetNormals(lRootNode);
+        Convert(lRootNode);
 
         //set me true to compute smoothing info from normals
         bool lComputeFromNormals = false;
@@ -449,7 +449,7 @@ void GetSmoothing(FbxManager* pSdkManager, FbxNode* pNode, bool pCompute, bool p
 }
 
 //get mesh normals info
-void GetNormals(FbxNode* pNode)
+void Convert(FbxNode* pNode)
 {
     if(!pNode)
         return;
@@ -534,7 +534,7 @@ void GetNormals(FbxNode* pNode)
     int i, lCount = pNode->GetChildCount();
     for (i = 0; i < lCount; i++)
     {
-        GetNormals(pNode->GetChild(i));
+        Convert(pNode->GetChild(i));
     }
 }
 
