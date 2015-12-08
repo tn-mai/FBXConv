@@ -101,7 +101,7 @@ namespace /* unnamed */ {
 	uint8_t  nameLength;
 	char     name[24];
 	bool     loopFlag;
-	float    totalFrames;
+	float    totalTime;
 	struct KeyFrame {
 	  float time;
 	  std::vector<RotTrans> pose;
@@ -399,7 +399,7 @@ namespace /* unnamed */ {
 	  char[24]      animation name.
 	  bool          loop flag
 	  uint16_t      key frame count.
-	  float         total frames.
+	  float         total time.
 	  [
 		float       frame.
 		[
@@ -453,6 +453,27 @@ namespace /* unnamed */ {
 		Output(ofs, rt.trans.x);
 		Output(ofs, rt.trans.y);
 		Output(ofs, rt.trans.z);
+	  }
+	  for (const Animation& anm : m.animationList) {
+		Output(ofs, anm.nameLength);
+		for (auto c : anm.name) {
+		  ofs << c;
+		}
+		Output(ofs, static_cast<uint8_t>(anm.loopFlag));
+		Output(ofs, static_cast<uint16_t>(anm.list.size()));
+		Output(ofs, anm.totalTime);
+		for (const Animation::KeyFrame& key : anm.list) {
+		  Output(ofs, key.time);
+		  for (const RotTrans& rt : key.pose) {
+			Output(ofs, rt.rot.x);
+			Output(ofs, rt.rot.y);
+			Output(ofs, rt.rot.z);
+			Output(ofs, rt.rot.w);
+			Output(ofs, rt.trans.x);
+			Output(ofs, rt.trans.y);
+			Output(ofs, rt.trans.z);
+		  }
+		}
 	  }
 	}
 
