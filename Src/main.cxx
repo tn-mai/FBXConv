@@ -101,7 +101,6 @@ namespace /* unnamed */ {
 	uint8_t  nameLength;
 	char     name[24];
 	bool     loopFlag;
-	uint16_t keyFrameCount;
 	float    totalFrames;
 	struct KeyFrame {
 	  float time;
@@ -348,6 +347,22 @@ namespace /* unnamed */ {
 	return result;
   }
 
+  size_t GetAnimationDataByteSize(const Mesh& m) {
+	size_t size = 0;
+	const size_t boneCount = m.bindPose.size();
+	if (boneCount) {
+	  size += 7 * 4 * boneCount; // RotTrans list for the bind pose.
+	  for (const Animation& e : m.animationList) {
+		size += 32; // animation header.
+		for (const Animation::KeyFrame& k : e.list) {
+		  size += 4; // time.
+		  size += 7 * 4 * boneCount; // RotTrans list for the key frame pose.
+		}
+	  }
+	}
+	return size;
+  }
+
   /** the output file format.
 
   the endianness is little endian.
@@ -367,24 +382,32 @@ namespace /* unnamed */ {
   vbo               vbo data.
   ibo               ibo data.
 
-  uint16_t          bone count.
-  uint16_t          animation count.
+  padding           (4 - (ibo byte size % 4) % 4 byte.
+
   [
-    RotTrans        rotation and translation for the bind pose.
-  ] x (bone count)
+    uint16_t        bone count.
+    uint16_t        animation count.
+	uint32_t        pose data offset by the top of file.
+  ] x (mesh count)
+
   [
-    uint8_t         animation name length.
-    char[24]        animation name.
-    bool            loop flag
-    uint16_t        key frame count.
-    float           total frames.
-    [
-      float         frame.
-      [
-        RotTrans    rotation and translation.
-      ] x (bone count)
-	] x (key frame count)
-  ] x (animation count)
+	[
+	  RotTrans      rotation and translation for the bind pose.
+	] x (bone count)
+	[
+	  uint8_t       animation name length.
+	  char[24]      animation name.
+	  bool          loop flag
+	  uint16_t      key frame count.
+	  float         total frames.
+	  [
+		float       frame.
+		[
+		  RotTrans  rotation and translation.
+		] x (bone count)
+	  ] x (key frame count)
+	] x (animation count)
+  ] x (mesh count)
   */
   void Output(const char* filename) {
 	std::ofstream ofs(filename, std::ios_base::binary);
@@ -407,6 +430,32 @@ namespace /* unnamed */ {
 	}
 	for (auto& v : vbo) { ofs << v; }
 	for (auto& i : ibo) { Output(ofs, i); }
+
+	for (size_t i = (4 - ((ibo.size() * sizeof(uint16_t)) % 4)) % 4; i; --i) {
+	  ofs << '\0';
+	}
+
+	size_t baseOffset = ofs.tellp();
+	baseOffset += (meshList.size() * (sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint32_t)));
+	for (const Mesh& m : meshList) {
+	  Output(ofs, static_cast<uint16_t>(m.bindPose.size()));
+	  Output(ofs, static_cast<uint16_t>(m.animationList.size()));
+	  Output(ofs, static_cast<uint32_t>(baseOffset));
+	  baseOffset += GetAnimationDataByteSize(m);
+	}
+
+	for (const Mesh& m : meshList) {
+	  for (const RotTrans& rt : m.bindPose) {
+		Output(ofs, rt.rot.x);
+		Output(ofs, rt.rot.y);
+		Output(ofs, rt.rot.z);
+		Output(ofs, rt.rot.w);
+		Output(ofs, rt.trans.x);
+		Output(ofs, rt.trans.y);
+		Output(ofs, rt.trans.z);
+	  }
+	}
+
 	ofs.close();
   }
 
@@ -618,6 +667,13 @@ void Convert(FbxNode* pNode)
 		const int count = lMesh->GetPolygonCount();
 		vbo.reserve(vbo.size() + count * 3);
 		ibo.reserve(ibo.size() + count * 3);
+
+		int boneWeightListSize = static_cast<int>(boneWeightList.size());
+		if (boneWeightList.size() > INT_MAX) {
+		  FBXSDK_printf("WARN: too many boneWeightList(%ld).", boneWeightList.size());
+		  boneWeightListSize = 0;
+		}
+
 		for (int i = 0; i < count; ++i) {
 		  for (int pos = 0; pos < 3; ++pos) {
 			const int index = lMesh->GetPolygonVertex(i, pos);
@@ -652,7 +708,7 @@ void Convert(FbxNode* pNode)
 			b = Vector3(-b.x, b.z, -b.y);
 			v.tangent.w = Dot(Cross(t, b), b) < 0.0f ? -1.0f : 1.0f;
 #endif
-			if (index < boneWeightList.size()) {
+			if (index < boneWeightListSize) {
 			  const BoneWeight& weightData = boneWeightList[index];
 			  for (int i = 0; i < 4; ++i) {
 				v.boneID[i] = static_cast<uint8_t>(weightData.boneIndex[i] != -1 ? weightData.boneIndex[i] : 0);
