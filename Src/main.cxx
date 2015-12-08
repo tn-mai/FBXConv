@@ -76,6 +76,39 @@ namespace /* unnamed */ {
 	Position2(const FbxVector2& v) : u(static_cast<uint16_t>(v[0] * 65535U)), v(static_cast<uint16_t>(v[1] * 65535U)) {}
 	Position2& operator==(const FbxVector2& v) { *this = Position2(v); return *this; }
   };
+  struct Quaternion {
+	float x, y, z, w;
+	Quaternion() {}
+	Quaternion(float xx, float yy, float zz, float ww) : x(xx), y(yy), z(zz), w(ww) {}
+	Quaternion(const FbxQuaternion& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])), w(static_cast<float>(v[3])) {}
+	Quaternion& operator==(const FbxQuaternion& v) { *this = Quaternion(v); return *this; }
+  };
+  struct RotTrans {
+	Quaternion rot;
+	Vector3 trans;
+  };
+  struct Vertex {
+	Vector3    position; ///< 頂点座標. 12
+	uint8_t    weight[4]; ///< 頂点ブレンディングの重み. 0-255 = 0.0-1.0として量子化した値を格納する. 4
+	Vector3    normal; ///< 頂点ノーマル. 12
+	uint8_t    boneID[4]; ///< 頂点ブレンディングのボーンID. 4
+	Position2  texCoord[2]; ///< ディフューズ(withメタルネス)マップ座標, ノーマル(withラフネス)マップ座標. 8
+	Vector4    tangent; ///< 頂点タンジェント. 16
+
+	Vertex() {}
+  };
+  struct Animation {
+	uint8_t  nameLength;
+	char     name[24];
+	bool     loopFlag;
+	uint16_t keyFrameCount;
+	float    totalFrames;
+	struct KeyFrame {
+	  float time;
+	  std::vector<RotTrans> pose;
+	};
+	std::vector<KeyFrame> list;
+  };
 
   Vector3 Cross(const Vector3& lhs, const Vector3& rhs) {
 	return Vector3(lhs.y * rhs.z - lhs.z * rhs.y, lhs.z * rhs.x - lhs.x * rhs.z, lhs.x * rhs.y - lhs.y * rhs.x);
@@ -87,18 +120,6 @@ namespace /* unnamed */ {
 	const float invNorm = 1.0f / std::sqrt(Dot(v, v));
 	return Vector3(v.x * invNorm, v.y * invNorm, v.z * invNorm);
   }
-
-  struct Vertex {
-	Vector3    position; ///< 頂点座標. 12
-	uint8_t    weight[4]; ///< 頂点ブレンディングの重み. 0-255 = 0.0-1.0として量子化した値を格納する. 4
-	Vector3    normal; ///< 頂点ノーマル. 12
-	uint8_t    boneID[4]; ///< 頂点ブレンディングのボーンID. 4
-	Position2  texCoord[2]; ///< ディフューズ(withメタルネス)マップ座標, ノーマル(withラフネス)マップ座標. 8
-	Vector4    tangent; ///< 頂点タンジェント. 16
-
-	Vertex() {}
-  };
-
   constexpr bool operator==(const Vector3& lhs, const Vector3& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z; }
   constexpr bool operator==(const Vector4& lhs, const Vector4& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w; }
   constexpr bool operator==(const Position2& lhs, const Position2& rhs) { return lhs.u == rhs.u && lhs.v == rhs.v; }
@@ -238,12 +259,15 @@ namespace /* unnamed */ {
   };
 
   struct Mesh {
+	size_t RawSize() const { return sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + nameLength; }
+	size_t Size() const { return (RawSize() + 3UL) & ~3UL; }
+
 	uint32_t iboOffset;
 	uint32_t iboSize;
 	uint8_t nameLength;
 	char name[55];
-	size_t RawSize() const { return sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + nameLength; }
-	size_t Size() const { return (RawSize() + 3UL) & ~3UL; }
+	std::vector<RotTrans> bindPose;
+	std::vector<Animation> animationList;
   };
 
   std::vector<Mesh> meshList;
@@ -298,6 +322,32 @@ namespace /* unnamed */ {
 	return result;
   }
 
+  std::vector<RotTrans> GetBindPose(const FbxMesh* pMesh) {
+	std::vector<RotTrans> result;
+	const int count = pMesh->GetDeformerCount(FbxDeformer::eSkin);
+	if (count) {
+	  const FbxNode* pNode = pMesh->GetNode();
+	  const FbxVector4 vT = pNode->GetGeometricTranslation(FbxNode::eSourcePivot);
+	  const FbxVector4 vR = pNode->GetGeometricRotation(FbxNode::eSourcePivot);
+	  const FbxVector4 vS = pNode->GetGeometricScaling(FbxNode::eSourcePivot);
+	  const FbxAMatrix mtxNode(vT, vR, vS);
+
+	  const FbxSkin* pSkin = static_cast<const FbxSkin*>(pMesh->GetDeformer(0, FbxDeformer::eSkin));
+	  const int boneCount = pSkin->GetClusterCount();
+	  result.reserve(boneCount);
+	  for (int boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
+		const FbxCluster* pCluster = pSkin->GetCluster(boneIndex);
+		FbxAMatrix mtxA, mtxB;
+		pCluster->GetTransformMatrix(mtxA);
+		pCluster->GetTransformLinkMatrix(mtxB);
+		const FbxAMatrix m = mtxB.Inverse() * mtxA * mtxNode;
+		const RotTrans rt = { m.GetQ(), m.GetT() };
+		result.push_back(rt);
+	  }
+	}
+	return result;
+  }
+
   /** the output file format.
 
   the endianness is little endian.
@@ -308,14 +358,33 @@ namespace /* unnamed */ {
   uint32_t          vbo byte size(32bit alignment).
   uint32_t          ibo byte size(32bit alignment).
   [
-  uint32_t        ibo offset.
-  uint32_t        ibo size.
-  uint8_t         mesh name length.
-  char[length]    mesh name.
-  padding         (4 - (length + 1) % 4) % 4 byte.
+    uint32_t        ibo offset.
+    uint32_t        ibo size.
+    uint8_t         mesh name length.
+    char[length]    mesh name.
+    padding         (4 - (length + 1) % 4) % 4 byte.
   ] x (mesh count)
   vbo               vbo data.
   ibo               ibo data.
+
+  uint16_t          bone count.
+  uint16_t          animation count.
+  [
+    RotTrans        rotation and translation for the bind pose.
+  ] x (bone count)
+  [
+    uint8_t         animation name length.
+    char[24]        animation name.
+    bool            loop flag
+    uint16_t        key frame count.
+    float           total frames.
+    [
+      float         frame.
+      [
+        RotTrans    rotation and translation.
+      ] x (bone count)
+	] x (key frame count)
+  ] x (animation count)
   */
   void Output(const char* filename) {
 	std::ofstream ofs(filename, std::ios_base::binary);
@@ -604,6 +673,9 @@ void Convert(FbxNode* pNode)
 		  }
 		}
 		mesh.iboSize = ibo.size() - mesh.iboOffset / sizeof(uint16_t);
+
+		mesh.bindPose = GetBindPose(lMesh);
+
 		meshList.push_back(mesh);
 	  }
 	}
