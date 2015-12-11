@@ -265,13 +265,13 @@ namespace /* unnamed */ {
 	uint32_t iboSize;
 	uint8_t nameLength;
 	char name[55];
-	std::vector<RotTrans> bindPose;
-	std::vector<Animation> animationList;
   };
 
   std::vector<Mesh> meshList;
   std::vector<Vertex> vbo;
   std::vector<uint16_t> ibo;
+  std::vector<RotTrans> bindPose;
+  std::vector<Animation> animationList;
 
   /** get the weight of the bones at the vertex index.
   */
@@ -347,25 +347,29 @@ namespace /* unnamed */ {
 	return result;
   }
 
-  size_t GetAnimationDataByteSize(const Mesh& m) {
-	size_t size = 0;
-	const size_t boneCount = m.bindPose.size();
-	if (boneCount) {
-	  size += 7 * 4 * boneCount; // RotTrans list for the bind pose.
-	  for (const Animation& e : m.animationList) {
-		size += 32; // animation header.
-		for (const Animation::KeyFrame& k : e.list) {
-		  size += 4; // time.
-		  size += 7 * 4 * boneCount; // RotTrans list for the key frame pose.
+  Animation GetAnimation(const FbxNode& skeletonRoot, const FbxScene& scene) {
+	const int numStacks = scene.GetSrcObjectCount<FbxAnimStack>();
+	for (int i = 0; i < numStacks; ++i) {
+	  const FbxAnimStack* pStack = scene.GetSrcObject<FbxAnimStack>(i);
+	  const int numLayers = pStack->GetMemberCount<FbxAnimLayer>();
+	  for (int j = 0; j < numLayers; ++j) {
+		const FbxAnimLayer* pLayer = pStack->GetMember<FbxAnimLayer>(j);
+		FBXSDK_printf("Layer[%d,%d]:%s\n", i, j, pLayer->GetName());
+		const FbxAnimCurve* pCurve = skeletonRoot.LclRotation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), FBXSDK_CURVENODE_COMPONENT_X);
+		const int keyCount = pCurve->KeyGetCount();
+		for (int i = 0; i < keyCount; ++i) {
+		  const float keyframe = static_cast<float>(pCurve->KeyGetTime(i).GetSecondDouble());
+		  FBXSDK_printf("  key:%f\n", keyframe);
 		}
 	  }
 	}
-	return size;
+	return Animation();
   }
 
   /** the output file format.
 
   the endianness is little endian.
+  all mesh uses same skeleton in the file.
 
   char[3]           "MSH"
   uint8_t           mesh count.
@@ -384,30 +388,27 @@ namespace /* unnamed */ {
 
   padding           (4 - (ibo byte size % 4) % 4 byte.
 
-  [
-    uint16_t        bone count.
-    uint16_t        animation count.
-	uint32_t        pose data offset by the top of file.
-  ] x (mesh count)
+  uint16_t          bone count.
+  uint16_t          animation count.
 
   [
-	[
-	  RotTrans      rotation and translation for the bind pose.
-	] x (bone count)
-	[
-	  uint8_t       animation name length.
-	  char[24]      animation name.
-	  bool          loop flag
-	  uint16_t      key frame count.
-	  float         total time.
-	  [
-		float       frame.
-		[
-		  RotTrans  rotation and translation.
-		] x (bone count)
-	  ] x (key frame count)
-	] x (animation count)
-  ] x (mesh count)
+    RotTrans        rotation and translation for the bind pose.
+  ] x (bone count)
+
+  [
+    uint8_t         animation name length.
+    char[24]        animation name.
+    bool            loop flag
+    uint16_t        key frame count.
+    float           total time.
+    [
+      float         frame.
+      [
+        RotTrans    rotation and translation.
+      ] x (bone count)
+    ] x (key frame count)
+  ] x (animation count)
+
   */
   void Output(const char* filename) {
 	std::ofstream ofs(filename, std::ios_base::binary);
@@ -435,44 +436,37 @@ namespace /* unnamed */ {
 	  ofs << '\0';
 	}
 
-	size_t baseOffset = ofs.tellp();
-	baseOffset += (meshList.size() * (sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint32_t)));
-	for (const Mesh& m : meshList) {
-	  Output(ofs, static_cast<uint16_t>(m.bindPose.size()));
-	  Output(ofs, static_cast<uint16_t>(m.animationList.size()));
-	  Output(ofs, static_cast<uint32_t>(baseOffset));
-	  baseOffset += GetAnimationDataByteSize(m);
+	Output(ofs, static_cast<uint16_t>(bindPose.size()));
+	Output(ofs, static_cast<uint16_t>(animationList.size()));
+
+	for (const RotTrans& rt : bindPose) {
+	  Output(ofs, rt.rot.x);
+	  Output(ofs, rt.rot.y);
+	  Output(ofs, rt.rot.z);
+	  Output(ofs, rt.rot.w);
+	  Output(ofs, rt.trans.x);
+	  Output(ofs, rt.trans.y);
+	  Output(ofs, rt.trans.z);
 	}
 
-	for (const Mesh& m : meshList) {
-	  for (const RotTrans& rt : m.bindPose) {
-		Output(ofs, rt.rot.x);
-		Output(ofs, rt.rot.y);
-		Output(ofs, rt.rot.z);
-		Output(ofs, rt.rot.w);
-		Output(ofs, rt.trans.x);
-		Output(ofs, rt.trans.y);
-		Output(ofs, rt.trans.z);
+	for (const Animation& anm : animationList) {
+	  Output(ofs, anm.nameLength);
+	  for (auto c : anm.name) {
+		ofs << c;
 	  }
-	  for (const Animation& anm : m.animationList) {
-		Output(ofs, anm.nameLength);
-		for (auto c : anm.name) {
-		  ofs << c;
-		}
-		Output(ofs, static_cast<uint8_t>(anm.loopFlag));
-		Output(ofs, static_cast<uint16_t>(anm.list.size()));
-		Output(ofs, anm.totalTime);
-		for (const Animation::KeyFrame& key : anm.list) {
-		  Output(ofs, key.time);
-		  for (const RotTrans& rt : key.pose) {
-			Output(ofs, rt.rot.x);
-			Output(ofs, rt.rot.y);
-			Output(ofs, rt.rot.z);
-			Output(ofs, rt.rot.w);
-			Output(ofs, rt.trans.x);
-			Output(ofs, rt.trans.y);
-			Output(ofs, rt.trans.z);
-		  }
+	  Output(ofs, static_cast<uint8_t>(anm.loopFlag));
+	  Output(ofs, static_cast<uint16_t>(anm.list.size()));
+	  Output(ofs, anm.totalTime);
+	  for (const Animation::KeyFrame& key : anm.list) {
+		Output(ofs, key.time);
+		for (const RotTrans& rt : key.pose) {
+		  Output(ofs, rt.rot.x);
+		  Output(ofs, rt.rot.y);
+		  Output(ofs, rt.rot.z);
+		  Output(ofs, rt.rot.w);
+		  Output(ofs, rt.trans.x);
+		  Output(ofs, rt.trans.y);
+		  Output(ofs, rt.trans.z);
 		}
 	  }
 	}
@@ -548,8 +542,8 @@ int main(int argc, char** argv)
     }
 
     //Destroy all objects created by the FBX SDK.
-    DestroySdkObjects(lSdkManager, lResult);
-    return 0;
+	DestroySdkObjects(lSdkManager, lResult);
+	return 0;
 }
 
 //get mesh smoothing info
