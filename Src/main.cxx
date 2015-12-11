@@ -347,15 +347,17 @@ namespace /* unnamed */ {
 	return result;
   }
 
-  Animation GetAnimation(const FbxNode& skeletonRoot, const FbxScene& scene) {
+  std::vector<Animation> GetAnimation(const FbxNode& skeletonRoot, const FbxScene& scene) {
+	std::vector<Animation> result;
 	const int numStacks = scene.GetSrcObjectCount<FbxAnimStack>();
+	result.reserve(numStacks);
 	for (int i = 0; i < numStacks; ++i) {
 	  const FbxAnimStack* pStack = scene.GetSrcObject<FbxAnimStack>(i);
 	  const int numLayers = pStack->GetMemberCount<FbxAnimLayer>();
 	  for (int j = 0; j < numLayers; ++j) {
 		const FbxAnimLayer* pLayer = pStack->GetMember<FbxAnimLayer>(j);
 		FBXSDK_printf("Layer[%d,%d]:%s\n", i, j, pLayer->GetName());
-		const FbxAnimCurve* pCurve = skeletonRoot.LclRotation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), FBXSDK_CURVENODE_COMPONENT_X);
+		const FbxAnimCurve* pCurve = const_cast<FbxNode&>(skeletonRoot).LclRotation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), FBXSDK_CURVENODE_COMPONENT_X);
 		const int keyCount = pCurve->KeyGetCount();
 		for (int i = 0; i < keyCount; ++i) {
 		  const float keyframe = static_cast<float>(pCurve->KeyGetTime(i).GetSecondDouble());
@@ -363,7 +365,7 @@ namespace /* unnamed */ {
 		}
 	  }
 	}
-	return Animation();
+	return result;
   }
 
   /** the output file format.
@@ -528,6 +530,17 @@ int main(int argc, char** argv)
         //get normals info, if there're mesh in the scene
         Convert(lRootNode);
 
+		std::vector<const FbxNode*> skeletonRootList;
+		const int childCount = lRootNode->GetChildCount();
+		for (int i = 0; i < childCount; ++i) {
+		  const FbxNode* pNode = lRootNode->GetChild(i);
+		  const FbxNodeAttribute* pAttr = pNode->GetNodeAttribute();
+		  if (pAttr && pAttr->GetAttributeType() == FbxNodeAttribute::eSkeleton) {
+			GetAnimation(*pNode, *lScene);
+			break;
+		  }
+		}
+
         //set me true to compute smoothing info from normals
         bool lComputeFromNormals = false;
         //set me true to convert hard/soft edges info to smoothing groups info
@@ -542,8 +555,8 @@ int main(int argc, char** argv)
     }
 
     //Destroy all objects created by the FBX SDK.
-	DestroySdkObjects(lSdkManager, lResult);
-	return 0;
+    DestroySdkObjects(lSdkManager, lResult);
+    return 0;
 }
 
 //get mesh smoothing info
@@ -745,7 +758,12 @@ void Convert(FbxNode* pNode)
 		}
 		mesh.iboSize = ibo.size() - mesh.iboOffset / sizeof(uint16_t);
 
-		mesh.bindPose = GetBindPose(lMesh);
+		if (!bindPose.empty()) {
+		  auto tmp = GetBindPose(lMesh);
+		  if (!tmp.empty()) {
+			bindPose = tmp;
+		  }
+		}
 
 		meshList.push_back(mesh);
 	  }
