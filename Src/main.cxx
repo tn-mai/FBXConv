@@ -83,10 +83,17 @@ namespace /* unnamed */ {
 	Quaternion(const FbxQuaternion& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])), w(static_cast<float>(v[3])) {}
 	Quaternion& operator==(const FbxQuaternion& v) { *this = Quaternion(v); return *this; }
   };
+
   struct RotTrans {
 	Quaternion rot;
 	Vector3 trans;
   };
+
+  struct Bone {
+	RotTrans rt;
+	int32_t parentIndex; ///< if this value has less than 0, it is the root bone.
+  };
+
   struct Vertex {
 	Vector3    position; ///< 頂点座標. 12
 	uint8_t    weight[4]; ///< 頂点ブレンディングの重み. 0-255 = 0.0-1.0として量子化した値を格納する. 4
@@ -97,6 +104,7 @@ namespace /* unnamed */ {
 
 	Vertex() {}
   };
+
   struct Animation {
 	uint8_t  nameLength;
 	char     name[24];
@@ -267,11 +275,53 @@ namespace /* unnamed */ {
 	char name[55];
   };
 
+  struct AnimationKeyframes {
+	std::string name;
+	std::vector<FbxTime> time;
+  };
+
   std::vector<Mesh> meshList;
   std::vector<Vertex> vbo;
   std::vector<uint16_t> ibo;
-  std::vector<RotTrans> bindPose;
+  std::vector<Bone> bindPose;
   std::vector<Animation> animationList;
+
+  /** get the first skin in the node tree.
+  */
+  const FbxSkin* GetSkinForAnimation(const FbxNode* pNode) {
+	if (const FbxMesh* pMesh = const_cast<FbxNode*>(pNode)->GetMesh()) {
+	  if (const int count = pMesh->GetDeformerCount(FbxDeformer::eSkin)) {
+		if (const FbxSkin* pSkin = static_cast<const FbxSkin*>(pMesh->GetDeformer(0, FbxDeformer::eSkin))) {
+		  if (const int boneCount = pSkin->GetClusterCount()) {
+			return pSkin;
+		  }
+		}
+	  }
+	}
+	const int childCount = pNode->GetChildCount();
+	for (int i = 0; i < childCount; ++i) {
+	  if (const FbxSkin* pSkin = GetSkinForAnimation(pNode->GetChild(i))) {
+		return pSkin;
+	  }
+	}
+	return nullptr;
+  }
+  
+  /** get the first skeleton node in the node tree.
+  */
+  const FbxNode* GetSkeletonNodeForAnimation(const FbxNode* pNode) {
+	const FbxNodeAttribute* pAttr = const_cast<FbxNode*>(pNode)->GetNodeAttribute();
+	if (pAttr && pAttr->GetAttributeType() == FbxNodeAttribute::eSkeleton) {
+	  return pNode;
+	}
+	const int childCount = pNode->GetChildCount();
+	for (int i = 0; i < childCount; ++i) {
+	  if (const FbxNode* p = GetSkeletonNodeForAnimation(pNode->GetChild(i))) {
+		return p;
+	  }
+	}
+	return nullptr;
+  }
 
   /** get the weight of the bones at the vertex index.
   */
@@ -321,51 +371,149 @@ namespace /* unnamed */ {
 	return result;
   }
 
-  std::vector<RotTrans> GetBindPose(const FbxMesh* pMesh) {
-	std::vector<RotTrans> result;
+  FbxAMatrix GetGeometry(const FbxNode* pNode) {
+	const FbxVector4 vT = pNode->GetGeometricTranslation(FbxNode::eSourcePivot);
+	const FbxVector4 vR = pNode->GetGeometricRotation(FbxNode::eSourcePivot);
+	const FbxVector4 vS = pNode->GetGeometricScaling(FbxNode::eSourcePivot);
+	return FbxAMatrix(vT, vR, vS);
+  }
+
+  std::vector<Bone> GetBindPose(const FbxMesh* pMesh) {
+	std::vector<Bone> result;
 	const int count = pMesh->GetDeformerCount(FbxDeformer::eSkin);
 	if (count) {
-	  const FbxNode* pNode = pMesh->GetNode();
-	  const FbxVector4 vT = pNode->GetGeometricTranslation(FbxNode::eSourcePivot);
-	  const FbxVector4 vR = pNode->GetGeometricRotation(FbxNode::eSourcePivot);
-	  const FbxVector4 vS = pNode->GetGeometricScaling(FbxNode::eSourcePivot);
-	  const FbxAMatrix mtxNode(vT, vR, vS);
-
+	  const FbxAMatrix mtxNode = GetGeometry(pMesh->GetNode());
 	  const FbxSkin* pSkin = static_cast<const FbxSkin*>(pMesh->GetDeformer(0, FbxDeformer::eSkin));
 	  const int boneCount = pSkin->GetClusterCount();
 	  result.reserve(boneCount);
 	  for (int boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
 		const FbxCluster* pCluster = pSkin->GetCluster(boneIndex);
+		int32_t parentIndex = -1;
+		const FbxNode* pNode = pCluster->GetLink();
+		if (const FbxNode* pParent = pNode->GetParent()) {
+		  if (const FbxNodeAttribute* pAttr = pParent->GetNodeAttribute()) {
+			if (pAttr->GetAttributeType() == FbxNodeAttribute::eSkeleton) {
+			  for (parentIndex = boneCount - 1; parentIndex >= 0; --parentIndex) {
+				if (pParent == pSkin->GetCluster(parentIndex)->GetLink()) {
+				  break;
+				}
+			  }
+			}
+		  }
+		}
 		FbxAMatrix mtxA, mtxB;
 		pCluster->GetTransformMatrix(mtxA);
 		pCluster->GetTransformLinkMatrix(mtxB);
 		const FbxAMatrix m = mtxB.Inverse() * mtxA * mtxNode;
 		const RotTrans rt = { m.GetQ(), m.GetT() };
-		result.push_back(rt);
+		result.push_back({ rt, parentIndex });
 	  }
 	}
 	return result;
   }
 
-  std::vector<Animation> GetAnimation(const FbxNode& skeletonRoot, const FbxScene& scene) {
-	std::vector<Animation> result;
+  void GetTranslationKeyframes(
+	const FbxNode& skeleton,
+	const FbxAnimLayer* pLayer,
+	const char* pChannel,
+	std::vector<FbxTime>& list
+  ) {
+	const FbxAnimCurve* pCurve = const_cast<FbxNode&>(skeleton).LclTranslation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), pChannel);
+	const int keyCount = pCurve ? pCurve->KeyGetCount() : 0;
+	for (int i = 0; i < keyCount; ++i) {
+	  list.push_back(pCurve->KeyGetTime(i));
+	}
+  }
+
+  void GetRotationKeyframes(
+	const FbxNode& skeleton,
+	const FbxAnimLayer* pLayer,
+	const char* pChannel,
+	std::vector<FbxTime>& list
+  ) {
+	const FbxAnimCurve* pCurve = const_cast<FbxNode&>(skeleton).LclRotation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), pChannel);
+	const int keyCount = pCurve ? pCurve->KeyGetCount() : 0;
+	for (int i = 0; i < keyCount; ++i) {
+	  list.push_back(pCurve->KeyGetTime(i));
+	}
+  }
+
+  std::vector<AnimationKeyframes> GetKeyframes(const FbxNode& skeleton, const FbxScene& scene) {
+	std::vector<AnimationKeyframes> result;
+	const FbxNodeAttribute* pAttr = const_cast<FbxNode&>(skeleton).GetNodeAttribute();
+	if (!pAttr || pAttr->GetAttributeType() != FbxNodeAttribute::eSkeleton) {
+	  return result;
+	}
 	const int numStacks = scene.GetSrcObjectCount<FbxAnimStack>();
 	result.reserve(numStacks);
 	for (int i = 0; i < numStacks; ++i) {
+	  std::vector<FbxTime> timeList;
 	  const FbxAnimStack* pStack = scene.GetSrcObject<FbxAnimStack>(i);
 	  const int numLayers = pStack->GetMemberCount<FbxAnimLayer>();
 	  for (int j = 0; j < numLayers; ++j) {
 		const FbxAnimLayer* pLayer = pStack->GetMember<FbxAnimLayer>(j);
-		FBXSDK_printf("Layer[%d,%d]:%s\n", i, j, pLayer->GetName());
-		const FbxAnimCurve* pCurve = const_cast<FbxNode&>(skeletonRoot).LclRotation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), FBXSDK_CURVENODE_COMPONENT_X);
-		const int keyCount = pCurve->KeyGetCount();
-		for (int i = 0; i < keyCount; ++i) {
-		  const float keyframe = static_cast<float>(pCurve->KeyGetTime(i).GetSecondDouble());
-		  FBXSDK_printf("  key:%f\n", keyframe);
-		}
+		GetTranslationKeyframes(skeleton, pLayer, FBXSDK_CURVENODE_COMPONENT_X, timeList);
+		GetTranslationKeyframes(skeleton, pLayer, FBXSDK_CURVENODE_COMPONENT_Y, timeList);
+		GetTranslationKeyframes(skeleton, pLayer, FBXSDK_CURVENODE_COMPONENT_Z, timeList);
+		GetRotationKeyframes(skeleton, pLayer, FBXSDK_CURVENODE_COMPONENT_X, timeList);
+		GetRotationKeyframes(skeleton, pLayer, FBXSDK_CURVENODE_COMPONENT_Y, timeList);
+		GetRotationKeyframes(skeleton, pLayer, FBXSDK_CURVENODE_COMPONENT_Z, timeList);
 	  }
+	  std::sort(timeList.begin(), timeList.end());
+	  timeList.erase(std::unique(timeList.begin(), timeList.end()), timeList.end());
+	  result.push_back({ pStack->GetName(), timeList });
 	}
 	return result;
+  }
+
+  void GetAnimation(FbxScene& scene) {
+	const FbxSkin* pSkin = GetSkinForAnimation(scene.GetRootNode());
+	const FbxNode* pSkeleton = GetSkeletonNodeForAnimation(scene.GetRootNode());
+	if (!pSkin || !pSkeleton) {
+	  return ;
+	}
+	const std::vector<AnimationKeyframes> keyframeList = GetKeyframes(*pSkeleton, scene);
+	if (keyframeList.empty()) {
+	  return ;
+	}
+	struct ClusterInfo {
+	  FbxNode* pNode;
+	  FbxAMatrix matrix;
+	};
+	const int clusterCount = pSkin->GetClusterCount();
+	std::vector<ClusterInfo> clusterNodeList;
+	clusterNodeList.reserve(clusterCount);
+	for (int i = 0; i < clusterCount; ++i) {
+	  FbxCluster* pCluster = const_cast<FbxSkin*>(pSkin)->GetCluster(i);
+	  FbxAMatrix mtxCurrent;
+	  pCluster->GetTransformLinkMatrix(mtxCurrent);
+	  clusterNodeList.push_back({ pCluster->GetLink(), mtxCurrent.Inverse() });
+	}
+	const int numStacks = scene.GetSrcObjectCount<FbxAnimStack>();
+	animationList.reserve(numStacks);
+	for (int i = 0; i < numStacks; ++i) {
+	  FbxAnimStack* pStack = scene.GetSrcObject<FbxAnimStack>(i);
+	  scene.SetCurrentAnimationStack(pStack);
+	  const std::vector<FbxTime>& keyframes = keyframeList[i].time;
+	  Animation  animation;
+	  const char* pName = [](const char* p) { for (const char* q = p; *q; ++q) { if (*q == '|') { return ++q; } } return p; }(pStack->GetName());
+	  animation.nameLength = static_cast<uint8_t>(std::strlen(pName));
+	  std::copy(pName, pName + animation.nameLength, animation.name);
+	  animation.totalTime = static_cast<float>(keyframes.back().GetSecondDouble());
+	  animation.loopFlag = true;
+	  animation.list.reserve(keyframes.size());
+	  for (auto e : keyframes) {
+		Animation::KeyFrame kf;
+		kf.time = static_cast<float>(e.GetSecondDouble());
+		kf.pose.reserve(clusterCount);
+		for (auto node : clusterNodeList) {
+		  const FbxAMatrix m = node.matrix * node.pNode->EvaluateGlobalTransform(e);
+		  kf.pose.push_back({ m.GetQ(), m.GetT() });
+		}
+		animation.list.push_back(kf);
+	  }
+	  animationList.push_back(animation);
+	}
   }
 
   /** the output file format.
@@ -395,6 +543,7 @@ namespace /* unnamed */ {
 
   [
     RotTrans        rotation and translation for the bind pose.
+	int32_t         parent bone index.
   ] x (bone count)
 
   [
@@ -441,14 +590,15 @@ namespace /* unnamed */ {
 	Output(ofs, static_cast<uint16_t>(bindPose.size()));
 	Output(ofs, static_cast<uint16_t>(animationList.size()));
 
-	for (const RotTrans& rt : bindPose) {
-	  Output(ofs, rt.rot.x);
-	  Output(ofs, rt.rot.y);
-	  Output(ofs, rt.rot.z);
-	  Output(ofs, rt.rot.w);
-	  Output(ofs, rt.trans.x);
-	  Output(ofs, rt.trans.y);
-	  Output(ofs, rt.trans.z);
+	for (const Bone& e : bindPose) {
+	  Output(ofs, e.rt.rot.x);
+	  Output(ofs, e.rt.rot.y);
+	  Output(ofs, e.rt.rot.z);
+	  Output(ofs, e.rt.rot.w);
+	  Output(ofs, e.rt.trans.x);
+	  Output(ofs, e.rt.trans.y);
+	  Output(ofs, e.rt.trans.z);
+	  Output(ofs, e.parentIndex);
 	}
 
 	for (const Animation& anm : animationList) {
@@ -524,22 +674,42 @@ int main(int argc, char** argv)
             FBX_ASSERT_NOW("null scene");
         }
 
-        //get root node of the fbx scene
-        FbxNode* lRootNode = lScene->GetRootNode();
-
-        //get normals info, if there're mesh in the scene
-        Convert(lRootNode);
-
-		std::vector<const FbxNode*> skeletonRootList;
-		const int childCount = lRootNode->GetChildCount();
-		for (int i = 0; i < childCount; ++i) {
-		  const FbxNode* pNode = lRootNode->GetChild(i);
-		  const FbxNodeAttribute* pAttr = pNode->GetNodeAttribute();
-		  if (pAttr && pAttr->GetAttributeType() == FbxNodeAttribute::eSkeleton) {
-			GetAnimation(*pNode, *lScene);
-			break;
-		  }
+		{
+		  FBXSDK_printf("pose count:%d\n", lScene->GetPoseCount());
 		}
+
+		{
+		  const char* p;
+		  switch (lScene->GetGlobalSettings().GetTimeMode()) {
+		  case FbxTime::eDefaultMode: p = "eDefaultMode"; break;
+		  case FbxTime::eFrames120: p = "eFrames120"; break;
+		  case FbxTime::eFrames100: p = "eFrames100"; break;
+		  case FbxTime::eFrames60: p = "eFrames60"; break;
+		  case FbxTime::eFrames50: p = "eFrames50"; break;
+		  case FbxTime::eFrames48: p = "eFrames48"; break;
+		  case FbxTime::eFrames30: p = "eFrames30"; break;
+		  case FbxTime::eFrames30Drop: p = "eFrames30Drop"; break;
+		  case FbxTime::eNTSCDropFrame: p = "eNTSCDropFrame"; break;
+		  case FbxTime::eNTSCFullFrame: p = "eNTSCFullFrame"; break;
+		  case FbxTime::ePAL: p = "ePAL"; break;
+		  case FbxTime::eFrames24: p = "eFrames24"; break;
+		  case FbxTime::eFrames1000: p = "eFrames1000"; break;
+		  case FbxTime::eFilmFullFrame: p = "eFilmFullFrame"; break;
+		  case FbxTime::eCustom: p = "eCustom"; break;
+		  case FbxTime::eFrames96: p = "eFrames96"; break;
+		  case FbxTime::eFrames72: p = "eFrames72"; break;
+		  case FbxTime::eFrames59dot94: p = "eFrames59dot94"; break;
+		  default: p = "unknown"; break;
+		  }
+		  FBXSDK_printf("time mode:%s\n", p);
+		}
+
+		//get root node of the fbx scene
+		FbxNode* lRootNode = lScene->GetRootNode();
+
+		//get normals info, if there're mesh in the scene
+        Convert(lRootNode);
+		GetAnimation(*lScene);
 
         //set me true to compute smoothing info from normals
         bool lComputeFromNormals = false;
@@ -758,7 +928,7 @@ void Convert(FbxNode* pNode)
 		}
 		mesh.iboSize = ibo.size() - mesh.iboOffset / sizeof(uint16_t);
 
-		if (!bindPose.empty()) {
+		if (bindPose.empty()) {
 		  auto tmp = GetBindPose(lMesh);
 		  if (!tmp.empty()) {
 			bindPose = tmp;
