@@ -43,7 +43,9 @@
 #include <numeric>
 #include <fstream>
 
-#define SAMPLE_FILENAME "TestData/block1.fbx"
+#define SAMPLE_FILENAME "TestData/chickenegg.fbx"
+
+//#define DEBUG_SHOW_ROTTRANS_INFO
 
 namespace /* unnamed */ {
 
@@ -62,6 +64,7 @@ namespace /* unnamed */ {
 	Vector3(float xx, float yy, float zz) : x(xx), y(yy), z(zz) {}
 	Vector3(const FbxVector4& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])) {}
 	Vector3& operator==(const FbxVector4& v) { *this = Vector3(v); return *this; }
+	Vector3& operator/=(float f) { x /= f; y /= f; z /= f; return *this; }
   };
   struct Vector4 {
 	float x, y, z, w;
@@ -81,7 +84,15 @@ namespace /* unnamed */ {
 	Quaternion() {}
 	Quaternion(float xx, float yy, float zz, float ww) : x(xx), y(yy), z(zz), w(ww) {}
 	Quaternion(const FbxQuaternion& v) : x(static_cast<float>(v[0])), y(static_cast<float>(v[1])), z(static_cast<float>(v[2])), w(static_cast<float>(v[3])) {}
+	Quaternion(const Vector3& axis, float angle) {
+	  const float s = std::sin(angle * 0.5f);
+	  x = axis.x * s;
+	  y = axis.y * s;
+	  z = axis.z * s;
+	  w = std::cos(angle * 0.5f);
+	}
 	Quaternion& operator==(const FbxQuaternion& v) { *this = Quaternion(v); return *this; }
+	Quaternion& operator*=(float f) { x *= f; y *= f; z *= f; w *= f; return *this; }
   };
 
   struct RotTrans {
@@ -123,9 +134,19 @@ namespace /* unnamed */ {
   float Dot(const Vector3& lhs, const Vector3& rhs) {
 	return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
   }
+  float Length(const Vector3& v) {
+	return std::sqrt(Dot(v, v));
+  }
+  float Length(const Quaternion& q) {
+	return std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  }
   Vector3 Normalize(const Vector3& v) {
-	const float invNorm = 1.0f / std::sqrt(Dot(v, v));
+	const float invNorm = 1.0f / Length(v);
 	return Vector3(v.x * invNorm, v.y * invNorm, v.z * invNorm);
+  }
+  Quaternion Normalize(const Quaternion& q) {
+	const float invNorm = 1.0f / Length(q);
+	return Quaternion(q.x * invNorm, q.y * invNorm, q.z * invNorm, q.w * invNorm);
   }
   constexpr bool operator==(const Vector3& lhs, const Vector3& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z; }
   constexpr bool operator==(const Vector4& lhs, const Vector4& rhs) { return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w; }
@@ -159,6 +180,93 @@ namespace /* unnamed */ {
 	return ofs;
   }
 
+  FbxAMatrix ToMatrix(const Quaternion& q) {
+	const float xx = 2.0f * q.x * q.x;
+	const float xy = 2.0f * q.x * q.y;
+	const float xz = 2.0f * q.x * q.z;
+	const float xw = 2.0f * q.x * q.w;
+	const float yy = 2.0f * q.y * q.y;
+	const float yz = 2.0f * q.y * q.z;
+	const float yw = 2.0f * q.y * q.w;
+	const float zz = 2.0f * q.z * q.z;
+	const float zw = 2.0f * q.z * q.w;
+
+	FbxAMatrix m;
+
+	m[0][0] = 1.0f - yy - zz;
+	m[0][1] = xy + zw;
+	m[0][2] = xz - yw;
+	m[0][3] = 0.0f;
+
+	m[1][0] = xy - zw;
+	m[1][1] = 1.0f - xx - zz;
+	m[1][2] = yz + xw;
+	m[1][3] = 0.0f;
+
+	m[2][0] = xz + yw;
+	m[2][1] = yz - xw;
+	m[2][2] = 1.0f - xx - yy;
+	m[2][3] = 0.0f;
+
+	m[3][0] = 0.0f;
+	m[3][1] = 0.0f;
+	m[3][2] = 0.0f;
+	m[3][3] = 1.0f;
+
+	return m;
+  }
+
+  FbxAMatrix ToMatrix(const RotTrans& rt) {
+	FbxAMatrix m = ToMatrix(rt.rot);
+	m[3][0] = rt.trans.x;
+	m[3][1] = rt.trans.y;
+	m[3][2] = rt.trans.z;
+	return m;
+  }
+
+  std::pair<Vector3, float> GetAxisAngle(const Quaternion& q) {
+	const float angle = 2.0f * std::acos(q.w);
+	const float n = std::sqrt(1.0f - q.w * q.w);
+	const float invN = std::abs(n) > FLT_EPSILON ? 1.0f / n : 0.0f;
+	const Vector3 axis(q.x * invN, q.y * invN, q.z * invN);
+	return std::make_pair(axis, angle);
+  }
+  FbxAMatrix FbxMatrixToFbxAMatrix(const FbxMatrix& m) {
+	FbxAMatrix result;
+	static_cast<FbxDouble4x4&>(result) = m;
+    return result;
+  }
+#if 0
+  void Decompose(const FbxAMatrix& m, Quaternion* q, Vector3* scale, Vector3* trans) {
+	if (trans) {
+	  trans->x = m.Get(3, 0);
+	  trans->y = m.Get(3, 1);
+	  trans->z = m.Get(3, 2);
+	}
+	Vector3 v0(m.Get(0, 0), m.Get(0, 1), m.Get(0, 2));
+	Vector3 v1(m.Get(1, 0), m.Get(1, 1), m.Get(1, 2));
+	Vector3 v2(m.Get(2, 0), m.Get(2, 1), m.Get(2, 2));
+	const Vector3 s(Length(v0), Length(v1), Length(v2));
+	if (scale) {
+	  *scale = s;
+	}
+	if (q) {
+	  // ‚±‚±(http://www.euclideanspace.com/maths/geometry/rotations/conversions/matrixToQuaternion/)‚ÌAlternative Method‚ðŽg‚¤.
+	  v0 /= s.x;
+	  v1 /= s.y;
+	  v2 /= s.z;
+	  *q = Quaternion(
+		std::sqrt(std::max(0.0f, 1.0f + v0.x - v1.y - v2.z)),
+		std::sqrt(std::max(0.0f, 1.0f - v0.x + v1.y - v2.z)),
+		std::sqrt(std::max(0.0f, 1.0f - v0.x - v1.y + v2.z)),
+		std::sqrt(std::max(0.0f, 1.0f + v0.x + v1.y + v2.z)));
+	  *q *= 0.5f;
+	  q->x = std::copysignf(q->x, v2.y - v1.z);
+	  q->y = std::copysignf(q->y, v0.z - v2.x);
+	  q->z = std::copysignf(q->z, v1.x - v0.y);
+	}
+  }
+#endif
   struct NormalElementTypeInfo {
 	typedef FbxGeometryElementNormal Type;
 	static Type* Get(FbxMesh* p) { return p->GetElementNormal(); }
@@ -170,8 +278,6 @@ namespace /* unnamed */ {
 	static Type* Get(FbxMesh* p) { return p->GetElementTangent(); }
 	static const char* Name() { return "tangent"; }
   };
-
-  template<typename ElementTypeInfoT> void GetMeshElement(FbxMesh* lMesh);
 
   template<typename T>
   struct Element {
@@ -257,9 +363,10 @@ namespace /* unnamed */ {
 		if (boneIndex[i] == -1) {
 		  boneIndex[i] = index;
 		  weight[i] = w;
-		  break;
+		  return;
 		}
 	  }
+	  FBXSDK_printf("weight list over.\n");
 	}
 	int boneIndex[4];
 	float weight[4];
@@ -333,6 +440,7 @@ namespace /* unnamed */ {
 	  const int boneCount = pSkin->GetClusterCount();
 	  std::vector<BoneWeightInfo> weightList;
 	  weightList.reserve(static_cast<size_t>(pMesh->GetPolygonCount() * 3));
+	  int maxVertexIndex = 0;
 	  for (int boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
 		const FbxCluster* pCluster = pSkin->GetCluster(boneIndex);
 		const int pointCount = pCluster->GetControlPointIndicesCount();
@@ -340,10 +448,11 @@ namespace /* unnamed */ {
 		const double* pWeights = pCluster->GetControlPointWeights();
 		for (int j = 0; j < pointCount; ++j) {
 		  weightList.push_back(BoneWeightInfo(pVertexIndices[j], boneIndex, static_cast<float>(pWeights[j])));
+		  maxVertexIndex = std::max(maxVertexIndex, pVertexIndices[j]);
 		}
 	  }
-	  std::sort(weightList.begin(), weightList.end(), [](const BoneWeightInfo& lhs, const BoneWeightInfo& rhs) { return lhs.vertexIndex < rhs.vertexIndex; });
-	  result.resize(weightList.back().vertexIndex + 1);
+	  std::sort(weightList.begin(), weightList.end(), [](const BoneWeightInfo& lhs, const BoneWeightInfo& rhs) { return lhs.weight > rhs.weight; });
+	  result.resize(maxVertexIndex + 1);
 	  for (const auto& e : weightList) {
 		result[e.vertexIndex].Add(e.boneIndex, e.weight);
 	  }
@@ -365,6 +474,16 @@ namespace /* unnamed */ {
 			const int i2 = std::modf(e.weight[i0], &dummy) >= std::modf(e.weight[i1], &dummy) ? i0 : i1;
 			e.weight[i2] = std::floor(e.weight[i2]) + 1.0f;
 		  }
+		  // check weight acuracy.
+		  {
+			const int w0 = static_cast<int>(e.weight[0]);
+			const int w1 = static_cast<int>(e.weight[1]);
+			const int w2 = static_cast<int>(e.weight[2]);
+			const int w3 = static_cast<int>(e.weight[3]);
+			if (w0 + w1 + w2 + w3 != 255) {
+			  FBXSDK_printf("invalid weight found: %d, %d, %d, %d\n", w0, w1, w2, w3);
+			}
+		  }
 		}
 	  }
 	}
@@ -378,11 +497,31 @@ namespace /* unnamed */ {
 	return FbxAMatrix(vT, vR, vS);
   }
 
-  std::vector<Bone> GetBindPose(const FbxMesh* pMesh) {
+  FbxAMatrix GetPoseMatrix(FbxPose* pPose, const FbxNode* pNode) {
+    const int nodeIndex = pPose->Find(pNode);
+    return FbxMatrixToFbxAMatrix(pPose->GetMatrix(nodeIndex));
+  }
+
+  FbxAMatrix GetAxisConversionMatrix() {
+	FbxAMatrix m;
+#if 1
+	m.SetIdentity();
+#else
+	m.SetRow(0, FbxVector4(1, 0, 0, 0));
+	m.SetRow(1, FbxVector4(0, 0, 1, 0));
+	m.SetRow(2, FbxVector4(0, -1, 0, 0));
+	m.SetRow(3, FbxVector4(0, 0, 0, 1));
+#endif
+	return m;
+  }
+
+  std::vector<Bone> GetBindPose(const FbxMesh* pMesh, FbxPose* pPose) {
 	std::vector<Bone> result;
+	const FbxAMatrix mtxInvGlobalPose = GetPoseMatrix(pPose, pMesh->GetNode()).Inverse();
 	const int count = pMesh->GetDeformerCount(FbxDeformer::eSkin);
 	if (count) {
-	  const FbxAMatrix mtxNode = GetGeometry(pMesh->GetNode());
+	  const FbxAMatrix mtxAxisConversion = GetAxisConversionMatrix();
+	  const FbxAMatrix mtxNode = GetGeometry(pMesh->GetNode()).Inverse();
 	  const FbxSkin* pSkin = static_cast<const FbxSkin*>(pMesh->GetDeformer(0, FbxDeformer::eSkin));
 	  const int boneCount = pSkin->GetClusterCount();
 	  result.reserve(boneCount);
@@ -401,43 +540,66 @@ namespace /* unnamed */ {
 			}
 		  }
 		}
-		FbxAMatrix mtxA, mtxB;
-		pCluster->GetTransformMatrix(mtxA);
-		pCluster->GetTransformLinkMatrix(mtxB);
-		const FbxAMatrix m = mtxB.Inverse() * mtxA * mtxNode;
-		const RotTrans rt = { m.GetQ(), m.GetT() };
+		const FbxAMatrix mtxPose = GetPoseMatrix(pPose, pCluster->GetLink());
+		const FbxAMatrix mtxInvClusterRelativeCurrent = mtxInvGlobalPose * mtxPose;
+		FbxAMatrix mtxTransform, mtxTransformLink;
+		pCluster->GetTransformMatrix(mtxTransform);
+		pCluster->GetTransformLinkMatrix(mtxTransformLink);
+		const FbxAMatrix mtxClusterRelativeInit = mtxTransformLink.Inverse() * mtxTransform * mtxNode;
+		const FbxAMatrix m = (mtxAxisConversion * mtxClusterRelativeInit).Inverse();
+		const RotTrans rt{ m.GetQ(), m.GetT() };
 		result.push_back({ rt, parentIndex });
 	  }
 	}
 	return result;
   }
 
+  void GetCurveKeyframes(const FbxAnimCurve* pCurve, std::vector<FbxTime>& list) {
+	if (pCurve) {
+	  const int keyCount = pCurve->KeyGetCount();
+	  for (int i = 0; i < keyCount; ++i) {
+		list.push_back(pCurve->KeyGetTime(i));
+	  }
+	}
+  }
+
   void GetTranslationKeyframes(
-	const FbxNode& skeleton,
+	const FbxNode& node,
 	const FbxAnimLayer* pLayer,
 	const char* pChannel,
 	std::vector<FbxTime>& list
   ) {
-	const FbxAnimCurve* pCurve = const_cast<FbxNode&>(skeleton).LclTranslation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), pChannel);
-	const int keyCount = pCurve ? pCurve->KeyGetCount() : 0;
-	for (int i = 0; i < keyCount; ++i) {
-	  list.push_back(pCurve->KeyGetTime(i));
+	const FbxAnimCurve* pCurve = const_cast<FbxNode&>(node).LclTranslation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), pChannel);
+	GetCurveKeyframes(pCurve, list);
+	const int childCount = node.GetChildCount();
+	for (int i = 0; i < childCount; ++i) {
+	  GetTranslationKeyframes(*node.GetChild(i), pLayer, pChannel, list);
 	}
   }
 
   void GetRotationKeyframes(
-	const FbxNode& skeleton,
+	const FbxNode& node,
 	const FbxAnimLayer* pLayer,
 	const char* pChannel,
 	std::vector<FbxTime>& list
   ) {
-	const FbxAnimCurve* pCurve = const_cast<FbxNode&>(skeleton).LclRotation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), pChannel);
-	const int keyCount = pCurve ? pCurve->KeyGetCount() : 0;
-	for (int i = 0; i < keyCount; ++i) {
-	  list.push_back(pCurve->KeyGetTime(i));
+	const FbxAnimCurve* pCurve = const_cast<FbxNode&>(node).LclRotation.GetCurve(const_cast<FbxAnimLayer*>(pLayer), pChannel);
+	GetCurveKeyframes(pCurve, list);
+	const int childCount = node.GetChildCount();
+	for (int i = 0; i < childCount; ++i) {
+	  GetRotationKeyframes(*node.GetChild(i), pLayer, pChannel, list);
 	}
   }
 
+  /** Get All animation key frames.
+
+    Get all key frames related skeleton node from animation stack in FBX scene.
+
+	@param skeleton  The node associated with the key frames.
+	@param scene     FBX scene object that contain skeleton and key frames.
+
+	@return A vector of key frame related to the skeleton in FBX scene.
+  */
   std::vector<AnimationKeyframes> GetKeyframes(const FbxNode& skeleton, const FbxScene& scene) {
 	std::vector<AnimationKeyframes> result;
 	const FbxNodeAttribute* pAttr = const_cast<FbxNode&>(skeleton).GetNodeAttribute();
@@ -466,53 +628,113 @@ namespace /* unnamed */ {
 	return result;
   }
 
+  /** Get and convert animation data from FBX.
+
+	Get all skin animation data from FbxScene, and Convert to the own data format.
+	Finally, store to the global variable of 'animationList'.
+
+	'animationList' output to the any file by Output() function.
+
+	@param scene FBX Scene object that contains skin animation data.
+
+	Puseud code of the matrix creation:
+	TransformationMatrixOfCluster
+	  = inverse(nodeThatHaveMesh.EvaluateGlobalTransform(time))
+	  * cluster.GetLink()->EvaluateGlobalTransform(time)
+	  * inverse(cluster.GetTransformLinkMatrix())
+	  * cluster.GetTransformMatrix()
+	  * GetGeometry(mesh.GetNode())
+
+	@see ComputeClusterDeformation(), DrawMesh() in ViewScene sample code in Autodesk FBX SDK 2016.1.2
+  */
   void GetAnimation(FbxScene& scene) {
 	const FbxSkin* pSkin = GetSkinForAnimation(scene.GetRootNode());
 	const FbxNode* pSkeleton = GetSkeletonNodeForAnimation(scene.GetRootNode());
 	if (!pSkin || !pSkeleton) {
-	  return ;
+	  return;
 	}
 	const std::vector<AnimationKeyframes> keyframeList = GetKeyframes(*pSkeleton, scene);
 	if (keyframeList.empty()) {
-	  return ;
+	  return;
 	}
 	struct ClusterInfo {
 	  FbxNode* pNode;
-	  FbxAMatrix matrix;
+	  FbxAMatrix mtxCurrent;
+	  FbxAMatrix mtxInvLink;
 	};
 	const int clusterCount = pSkin->GetClusterCount();
 	std::vector<ClusterInfo> clusterNodeList;
 	clusterNodeList.reserve(clusterCount);
 	for (int i = 0; i < clusterCount; ++i) {
 	  FbxCluster* pCluster = const_cast<FbxSkin*>(pSkin)->GetCluster(i);
-	  FbxAMatrix mtxCurrent;
-	  pCluster->GetTransformLinkMatrix(mtxCurrent);
-	  clusterNodeList.push_back({ pCluster->GetLink(), mtxCurrent.Inverse() });
+	  FbxAMatrix mtxCurrent, mtxLink;
+	  pCluster->GetTransformLinkMatrix(mtxLink);
+	  pCluster->GetTransformMatrix(mtxCurrent);
+	  clusterNodeList.push_back({ pCluster->GetLink(), mtxCurrent, mtxLink.Inverse() });
 	}
-	const int numStacks = scene.GetSrcObjectCount<FbxAnimStack>();
-	animationList.reserve(numStacks);
-	for (int i = 0; i < numStacks; ++i) {
-	  FbxAnimStack* pStack = scene.GetSrcObject<FbxAnimStack>(i);
-	  scene.SetCurrentAnimationStack(pStack);
+
+	const FbxAMatrix mtxAxisConversion = GetAxisConversionMatrix();
+
+	FbxArray<FbxString*> animStackNameArray;
+	scene.FillAnimStackNameArray(animStackNameArray);
+	const int animStackCount = animStackNameArray.GetCount();
+	const int meshCount = scene.GetMemberCount<FbxMesh>();
+	for (int i = 0; i < animStackCount; ++i) {
+	  FbxAnimStack* pCurrentAnimationStack = scene.FindMember<FbxAnimStack>(animStackNameArray[i]->Buffer());
+	  scene.SetCurrentAnimationStack(pCurrentAnimationStack);
+	  const char* pName = [](const char* p) { for (const char* q = p; *q; ++q) { if (*q == '|') { return ++q; } } return p; }(pCurrentAnimationStack->GetName());
 	  const std::vector<FbxTime>& keyframes = keyframeList[i].time;
+	  if (keyframes.empty()) {
+		continue;
+	  }
 	  Animation  animation;
-	  const char* pName = [](const char* p) { for (const char* q = p; *q; ++q) { if (*q == '|') { return ++q; } } return p; }(pStack->GetName());
 	  animation.nameLength = static_cast<uint8_t>(std::strlen(pName));
 	  std::copy(pName, pName + animation.nameLength, animation.name);
 	  animation.totalTime = static_cast<float>(keyframes.back().GetSecondDouble());
 	  animation.loopFlag = true;
+	  FBXSDK_printf("%s: %fsec(keys=%d)\n", pCurrentAnimationStack->GetName(), animation.totalTime, keyframes.size());
 	  animation.list.reserve(keyframes.size());
-	  for (auto e : keyframes) {
-		Animation::KeyFrame kf;
-		kf.time = static_cast<float>(e.GetSecondDouble());
-		kf.pose.reserve(clusterCount);
-		for (auto node : clusterNodeList) {
-		  const FbxAMatrix m = node.matrix * node.pNode->EvaluateGlobalTransform(e);
-		  kf.pose.push_back({ m.GetQ(), m.GetT() });
+	  for (int meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+		FbxMesh* pMesh = scene.GetMember<FbxMesh>(meshIndex);
+		if (pMesh->GetDeformerCount(FbxDeformer::eSkin) > 0) {
+		  FbxNode* pNode = pMesh->GetNode();
+		  FbxAMatrix mtxGlobalGeometry = GetGeometry(pNode);
+		  for (auto keyframe : keyframes) {
+			Animation::KeyFrame kf;
+			kf.time = static_cast<float>(keyframe.GetSecondDouble());
+			kf.pose.reserve(clusterCount);
+#ifdef DEBUG_SHOW_ROTTRANS_INFO
+			FBXSDK_printf("time=%f\n",kf.time);
+#endif // DEBUG_SHOW_ROTTRANS_INFO
+			FbxAMatrix mtxInvGlobalPosition = (pNode->EvaluateGlobalTransform(keyframe) * mtxGlobalGeometry).Inverse();
+			for (auto cluster : clusterNodeList) {
+			  FbxAMatrix mtxClusterPosition = cluster.pNode->EvaluateGlobalTransform(keyframe);
+			  FbxAMatrix m = (mtxInvGlobalPosition * mtxClusterPosition) * (cluster.mtxInvLink * (cluster.mtxCurrent * mtxGlobalGeometry));
+			  //m = mtxAxisConversion * m;
+			  RotTrans rt{ m.GetQ(), m.GetT() };
+			  rt.rot = Quaternion(rt.rot.x, rt.rot.z, -rt.rot.y, rt.rot.w);
+			  rt.trans = Vector3(rt.trans.x, rt.trans.z, -rt.trans.y);
+#if 0
+			  // verify conversion accuracy.
+			  {
+				const double threshold = (1.0e-6);
+				FbxAMatrix m0 = ToMatrix(rt);
+				FbxAMatrix m1 = m * m0.Inverse();
+				if (!m1.IsIdentity(threshold)) {
+				  FBXSDK_printf("non accurate conversion found.\n");
+				}
+			  }
+#endif
+#ifdef DEBUG_SHOW_ROTTRANS_INFO
+			  FBXSDK_printf("  %-10s:(%+1.3f, %+1.3f, %+1.3f, %+1.3f) (%+1.3f, %+1.3f, %+1.3f)\n", cluster.pNode->GetName(), rt.rot.w, rt.rot.x, rt.rot.y, rt.rot.z, rt.trans.x, rt.trans.y, rt.trans.z);
+#endif // DEBUG_SHOW_ROTTRANS_INFO
+			  kf.pose.push_back(rt);
+			}
+			animation.list.push_back(kf);
+		  }
+		  animationList.push_back(animation);
 		}
-		animation.list.push_back(kf);
 	  }
-	  animationList.push_back(animation);
 	}
   }
 
@@ -872,11 +1094,12 @@ void Convert(FbxNode* pNode)
 		  boneWeightListSize = 0;
 		}
 
+		const FbxVector4* const pControlPoints = lMesh->GetControlPoints();
 		for (int i = 0; i < count; ++i) {
 		  for (int pos = 0; pos < 3; ++pos) {
 			const int index = lMesh->GetPolygonVertex(i, pos);
 			Vertex v;
-			v.position = lMesh->GetControlPointAt(index);
+			v.position = pControlPoints[index];
 			v.position = Vector3(v.position.x, v.position.z, -v.position.y);
 			FbxVector4 vNormal;
 			lMesh->GetPolygonVertexNormal(i, pos, vNormal);
@@ -929,9 +1152,11 @@ void Convert(FbxNode* pNode)
 		mesh.iboSize = ibo.size() - mesh.iboOffset / sizeof(uint16_t);
 
 		if (bindPose.empty()) {
-		  auto tmp = GetBindPose(lMesh);
-		  if (!tmp.empty()) {
-			bindPose = tmp;
+		  if (FbxPose* pPose = pNode->GetScene()->GetPose(0)) {
+			auto tmp = GetBindPose(lMesh, pPose);
+			if (!tmp.empty()) {
+			  bindPose = tmp;
+			}
 		  }
 		}
 
