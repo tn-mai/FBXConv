@@ -43,8 +43,6 @@
 #include <numeric>
 #include <fstream>
 
-#define SAMPLE_FILENAME "TestData/chickenegg.fbx"
-
 //#define DEBUG_SHOW_ROTTRANS_INFO
 
 namespace /* unnamed */ {
@@ -855,6 +853,8 @@ namespace /* unnamed */ {
 } // unnamed namespace
 
 static bool gVerbose = true;
+static bool gApplyGlobalGeometry = true;
+static double gScale = 1.0;
 
 //set pCompute true to compute smoothing from normals by default 
 //set pConvertToSmoothingGroup true to convert hard/soft edge info to smoothing group info by default
@@ -877,10 +877,28 @@ int main(int argc, char** argv)
 	FbxString lFilePath("");
 	for( int i = 1, c = argc; i < c; ++i )
 	{
-		if( FbxString(argv[i]) == "-test" ) gVerbose = false;
-		else if( lFilePath.IsEmpty() ) lFilePath = argv[i];
+		if ((FbxString(argv[i]) == "-scale") && (i + 1 <= c)) {
+			gScale = std::max(0.0000001, atof(argv[i + 1]));
+			++i;
+		} else if ((FbxString(argv[i]) == "-local") && (i + 1 <= c)) {
+			gApplyGlobalGeometry = false;	
+		} else if (FbxString(argv[i]) == "-test") {
+			gVerbose = false;
+		} else if (lFilePath.IsEmpty()) {
+			lFilePath = argv[i];
+		}
 	}
-	if( lFilePath.IsEmpty() ) lFilePath = SAMPLE_FILENAME;
+	if (lFilePath.IsEmpty()) {
+		FBXSDK_printf(
+			"FBXConv.exe ver.1.0\n"
+			"Usage: FBXConv.exe [-local] [-scale s] [infile]\n\n"
+			"-local  : Ignore the parent nodes.\n"
+			"-scale s: Scale the mesh(default=1.0).\n"
+			"infile  : Input FBX filename.\n"
+			"          The output filename is the extension is replaced to 'msh'.\n"
+		);
+		return 0;
+	}
 
 	FBXSDK_printf("\n\nFile: %s\n\n", lFilePath.Buffer());
 	lResult = LoadScene(lSdkManager, lScene, lFilePath.Buffer());
@@ -930,7 +948,7 @@ int main(int argc, char** argv)
 		FbxNode* lRootNode = lScene->GetRootNode();
 
 		//get normals info, if there're mesh in the scene
-        Convert(lRootNode);
+		Convert(lRootNode);
 		GetAnimation(*lScene);
 
         //set me true to compute smoothing info from normals
@@ -1094,17 +1112,31 @@ void Convert(FbxNode* pNode)
 		  boneWeightListSize = 0;
 		}
 
+		FbxAMatrix trsMatrix;
+		if (gApplyGlobalGeometry) {
+		  trsMatrix = pNode->EvaluateGlobalTransform();
+		} else {
+		  trsMatrix[1][1] = 0;
+		  trsMatrix[1][2] = -1;
+		  trsMatrix[2][1] = 1;
+		  trsMatrix[2][2] = 0;
+		}
+		FbxAMatrix normalMatrix;
+		normalMatrix.SetR(trsMatrix.GetR());
+		if (gScale != 1.0) {
+		  FbxAMatrix tmpScale;
+		  tmpScale.SetS(FbxVector4(gScale, gScale, gScale));
+		  trsMatrix *= tmpScale;
+		}
 		const FbxVector4* const pControlPoints = lMesh->GetControlPoints();
 		for (int i = 0; i < count; ++i) {
 		  for (int pos = 0; pos < 3; ++pos) {
 			const int index = lMesh->GetPolygonVertex(i, pos);
 			Vertex v;
-			v.position = pControlPoints[index];
-			v.position = Vector3(v.position.x, v.position.z, -v.position.y);
+			v.position = trsMatrix.MultT(pControlPoints[index]);
 			FbxVector4 vNormal;
 			lMesh->GetPolygonVertexNormal(i, pos, vNormal);
-			v.normal = vNormal;
-			v.normal = Vector3(v.normal.x, v.normal.z, -v.normal.y);
+			v.normal = normalMatrix.MultT(vNormal);
 			FbxVector2 vTexCoord;
 			bool unmapped;
 			lMesh->GetPolygonVertexUV(i, pos, UVSetNameList[0], vTexCoord, unmapped);
