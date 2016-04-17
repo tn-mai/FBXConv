@@ -1124,9 +1124,8 @@ void Convert(FbxNode* pNode)
 		FbxAMatrix normalMatrix;
 		normalMatrix.SetR(trsMatrix.GetR());
 		if (gScale != 1.0) {
-		  FbxAMatrix tmpScale;
-		  tmpScale.SetS(FbxVector4(gScale, gScale, gScale));
-		  trsMatrix *= tmpScale;
+		  const FbxAMatrix mtxScale(FbxVector4(), FbxVector4(), FbxVector4(gScale, gScale, gScale));
+		  trsMatrix = mtxScale * trsMatrix;
 		}
 		const FbxVector4* const pControlPoints = lMesh->GetControlPoints();
 		for (int i = 0; i < count; ++i) {
