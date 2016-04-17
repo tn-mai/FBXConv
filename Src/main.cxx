@@ -892,7 +892,7 @@ int main(int argc, char** argv)
 		FBXSDK_printf(
 			"FBXConv.exe ver.1.0\n"
 			"Usage: FBXConv.exe [-local] [-scale s] [infile]\n\n"
-			"-local  : Ignore the parent nodes.\n"
+			"-local  : Ignore the parent nodes. It should be given for animated data.\n"
 			"-scale s: Scale the mesh(default=1.0).\n"
 			"infile  : Input FBX filename.\n"
 			"          The output filename is the extension is replaced to 'msh'.\n"
