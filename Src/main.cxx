@@ -370,14 +370,26 @@ namespace /* unnamed */ {
 	float weight[4];
   };
 
-  struct Mesh {
-	size_t RawSize() const { return sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + nameLength; }
-	size_t Size() const { return (RawSize() + 3UL) & ~3UL; }
+  struct Material {
+	float r, g, b, a;
+	float metallic;
+	float roughness;
 
 	uint32_t iboOffset;
 	uint32_t iboSize;
-	uint8_t nameLength;
-	char name[55];
+  };
+
+  struct Mesh {
+	// Material data size(ibo offset + ibo size + rgba + metallic + roughness).
+	static size_t MaterialSize() { return sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint8_t) * 6; }
+	size_t RawSize() const {
+	  return sizeof(uint8_t) + name.size() + sizeof(uint8_t) +
+		MaterialSize() * materialList.size();
+	}
+	size_t Size() const { return (RawSize() + 3UL) & ~3UL; }
+
+	std::string name;
+	std::vector<Material> materialList;
   };
 
   struct AnimationKeyframes {
@@ -736,50 +748,9 @@ namespace /* unnamed */ {
 	}
   }
 
-  /** the output file format.
+  /** Output MSH file.
 
-  the endianness is little endian.
-  all mesh uses same skeleton in the file.
-
-  char[3]           "MSH"
-  uint8_t           mesh count.
-  uint32_t          vbo offset by the top of file(32bit alignment).
-  uint32_t          vbo byte size(32bit alignment).
-  uint32_t          ibo byte size(32bit alignment).
-  [
-    uint32_t        ibo offset.
-    uint32_t        ibo size.
-    uint8_t         mesh name length.
-    char[length]    mesh name.
-    padding         (4 - (length + 1) % 4) % 4 byte.
-  ] x (mesh count)
-  vbo               vbo data.
-  ibo               ibo data.
-
-  padding           (4 - (ibo byte size % 4) % 4 byte.
-
-  uint16_t          bone count.
-  uint16_t          animation count.
-
-  [
-    RotTrans        rotation and translation for the bind pose.
-	int32_t         parent bone index.
-  ] x (bone count)
-
-  [
-    uint8_t         animation name length.
-    char[24]        animation name.
-    bool            loop flag
-    uint16_t        key frame count.
-    float           total time.
-    [
-      float         frame.
-      [
-        RotTrans    rotation and translation.
-      ] x (bone count)
-    ] x (key frame count)
-  ] x (animation count)
-
+    @param  filename  A path of the output file.
   */
   void Output(const char* filename) {
 	std::ofstream ofs(filename, std::ios_base::binary);
@@ -790,14 +761,23 @@ namespace /* unnamed */ {
 	Output(ofs, static_cast<uint32_t>(vbo.size() * sizeof(Vertex)));
 	Output(ofs, static_cast<uint32_t>(ibo.size() * sizeof(uint16_t)));
 	for (const Mesh& m : meshList) {
-	  Output(ofs, m.iboOffset);
-	  Output(ofs, m.iboSize);
-	  Output(ofs, m.nameLength);
-	  for (uint8_t i = 0; i < m.nameLength; ++i) {
+	  ofs << static_cast<uint8_t>(m.name.size());
+	  for (uint8_t i = 0; i < m.name.size(); ++i) {
 		ofs << m.name[i];
 	  }
+	  ofs << static_cast<uint8_t>(m.materialList.size());
 	  for (size_t i = m.RawSize(); i < m.Size(); ++i) {
 		ofs << '\0';
+	  }
+	  for (auto& e : m.materialList) {
+		Output(ofs, static_cast<uint32_t>(e.iboOffset));
+		Output(ofs, static_cast<uint16_t>(e.iboSize));
+		ofs << static_cast<uint8_t>(std::min(0.0f, std::max(255.0f, e.r * 255.0f)));
+		ofs << static_cast<uint8_t>(std::min(0.0f, std::max(255.0f, e.g * 255.0f)));
+		ofs << static_cast<uint8_t>(std::min(0.0f, std::max(255.0f, e.b * 255.0f)));
+		ofs << static_cast<uint8_t>(std::min(0.0f, std::max(255.0f, e.a * 255.0f)));
+		ofs << static_cast<uint8_t>(std::min(0.0f, std::max(255.0f, e.metallic * 255.0f)));
+		ofs << static_cast<uint8_t>(std::min(0.0f, std::max(255.0f, e.roughness * 255.0f)));
 	  }
 	}
 	for (auto& v : vbo) { ofs << v; }
@@ -1080,28 +1060,88 @@ void Convert(FbxNode* pNode)
     if(!pNode)
         return;
 
+	static const char* const implementationList[] = {
+	  FBXSDK_IMPLEMENTATION_PREVIEW,
+	  FBXSDK_IMPLEMENTATION_MENTALRAY,
+	  FBXSDK_IMPLEMENTATION_CGFX,
+	  FBXSDK_IMPLEMENTATION_HLSL,
+	  FBXSDK_IMPLEMENTATION_SFX,
+	  FBXSDK_IMPLEMENTATION_OGS,
+	  FBXSDK_IMPLEMENTATION_NONE,
+	};
+	for (int i = 0; i < sizeof(implementationList) / sizeof(implementationList[0]); ++i) {
+	  if (const FbxImplementation* pImpl = GetImplementation(pNode, implementationList[i])) {
+		FBXSDK_printf("Shader type: %s\n", implementationList[i]);
+	  }
+	}
+
     //get mesh
     const FbxMesh* lMesh = pNode->GetMesh();
 	if (lMesh) {
 	  if (const auto pElement = lMesh->GetElementTangent()) {
+		Mesh mesh;
+
+		const int materialCount = pNode->GetMaterialCount();
+		mesh.materialList.reserve(materialCount);
+
+		std::vector<std::vector<uint16_t>> iboBufferPerMaterial;
+		iboBufferPerMaterial.resize(materialCount);
+		for (auto& e : iboBufferPerMaterial) {
+		  e.reserve(1024 * 3);
+		}
+
+		for (int i = 0; i < materialCount; ++i) {
+		  Material material;
+		  material.iboOffset = 0;
+		  material.iboSize = 0;
+		  if (const FbxSurfaceMaterial* pMaterial = pNode->GetMaterial(i)) {
+			if (pMaterial->GetClassId().Is(FbxSurfaceLambert::ClassId)) {
+			  const FbxSurfaceLambert* pLambert = static_cast<const FbxSurfaceLambert*>(pMaterial);
+			  FBXSDK_printf("Material(Lambert) %d: %s\n", i, pLambert->GetName());
+			  material.r = static_cast<float>(pLambert->Diffuse.Get()[0]);
+			  material.g = static_cast<float>(pLambert->Diffuse.Get()[1]);
+			  material.b = static_cast<float>(pLambert->Diffuse.Get()[2]);
+			  material.a = static_cast<float>(1.0 - pLambert->TransparencyFactor.Get());
+			} else if (pMaterial->GetClassId().Is(FbxSurfacePhong::ClassId)) {
+			  const FbxSurfacePhong* pPhong = static_cast<const FbxSurfacePhong*>(pMaterial);
+			  FBXSDK_printf("Material(Phong) %d: %s\n", i, pPhong->GetName());
+			  material.r = static_cast<float>(pPhong->Diffuse.Get()[0]);
+			  material.g = static_cast<float>(pPhong->Diffuse.Get()[1]);
+			  material.b = static_cast<float>(pPhong->Diffuse.Get()[2]);
+			  material.a = static_cast<float>(1.0 - pPhong->TransparencyFactor.Get());
+			} else {
+			  FBXSDK_printf("Material(Unknown) %d: %s\n", i, pMaterial->GetName());
+			  material.r = material.g = material.b = material.a = 1.0f;
+			}
+			const FbxProperty propMetallic = pMaterial->FindProperty("Metallic");
+			material.metallic = propMetallic.IsValid() ? propMetallic.Get<float>() : 0.0f;
+			const FbxProperty propRoughness = pMaterial->FindProperty("Roughness");
+			material.roughness = propMetallic.IsValid() ? propRoughness.Get<float>() : 1.0f;
+		  } else {
+			material.r = material.g = material.b = material.a = 1.0f;
+			material.metallic = 0.0f;
+			material.roughness = 1.0f;
+		  }
+		  mesh.materialList.push_back(material);
+		}
+		const FbxGeometryElementMaterial* pMaterialLayer = lMesh->GetElementMaterial();
+
 		//print mesh node name
 		FBXSDK_printf("current mesh node: %s\n", pNode->GetName());
 
 		const std::vector<BoneWeight> boneWeightList = GetBoneWeightList(lMesh);
 
-		Mesh mesh = { 0 };
-		mesh.iboOffset = ibo.size() * sizeof(uint16_t);
-		mesh.nameLength = static_cast<uint8_t>(std::strlen(pNode->GetName()));
-		if (mesh.nameLength > 23) {
-		  mesh.nameLength = 23;
+		int nameLength = std::strlen(pNode->GetName());
+		if (nameLength > 23) {
+		  nameLength = 23;
 		}
-		std::copy(pNode->GetName(), pNode->GetName() + mesh.nameLength, mesh.name);
+		mesh.name.assign(pNode->GetName(), nameLength);
 
 		FBXSDK_printf("tangent:\n");
 		FbxStringList UVSetNameList;
 		lMesh->GetUVSetNames(UVSetNameList);
 		const TangentElement tangentList(lMesh, pElement);
-//		const BinormalElement binormalList(lMesh, lMesh->GetElementBinormal());
+		//		const BinormalElement binormalList(lMesh, lMesh->GetElementBinormal());
 		const int count = lMesh->GetPolygonCount();
 		vbo.reserve(vbo.size() + count * 3);
 		ibo.reserve(ibo.size() + count * 3);
@@ -1127,6 +1167,7 @@ void Convert(FbxNode* pNode)
 		  const FbxAMatrix mtxScale(FbxVector4(), FbxVector4(), FbxVector4(gScale, gScale, gScale));
 		  trsMatrix = mtxScale * trsMatrix;
 		}
+		const FbxLayerElementArrayTemplate<int>& materialIndexArray = pMaterialLayer->GetIndexArray();
 		const FbxVector4* const pControlPoints = lMesh->GetControlPoints();
 		for (int i = 0; i < count; ++i) {
 		  for (int pos = 0; pos < 3; ++pos) {
@@ -1147,12 +1188,12 @@ void Convert(FbxNode* pNode)
 			if (v.normal.y > 0.9f) {
 			  v.tangent.w = -1.0f;
 			}
-//			Vector3 b = binormalList.Get(i, pos);
-//			b.y *= -1.0f;
-//			const Vector3 b2 = Normalize(Cross(v.normal, Vector3(v.tangent.x, v.tangent.y, v.tangent.z)));
-//			if (Dot(b, b2) < 0.0f) {
-//			  v.tangent.w = -1.0f;
-//			}
+			//			Vector3 b = binormalList.Get(i, pos);
+			//			b.y *= -1.0f;
+			//			const Vector3 b2 = Normalize(Cross(v.normal, Vector3(v.tangent.x, v.tangent.y, v.tangent.z)));
+			//			if (Dot(b, b2) < 0.0f) {
+			//			  v.tangent.w = -1.0f;
+			//			}
 #else
 			v.tangent = Vector4(-v.tangent.x, v.tangent.z, -v.tangent.y, v.tangent.w);
 			const Vector3 t(v.tangent.x, v.tangent.y, v.tangent.z);
@@ -1171,16 +1212,21 @@ void Convert(FbxNode* pNode)
 			  v.weight[0] = 255; v.weight[1] = v.weight[2] = v.weight[3] = 0;
 			}
 
+			auto& iboBuffer = iboBufferPerMaterial[materialIndexArray[i]];
 			auto itr = std::find(vbo.begin(), vbo.end(), v);
 			if (itr == vbo.end()) {
-			  ibo.push_back(static_cast<uint16_t>(vbo.size()));
+			  iboBuffer.push_back(static_cast<uint16_t>(vbo.size()));
 			  vbo.push_back(v);
 			} else {
-			  ibo.push_back(itr - vbo.begin());
+			  iboBuffer.push_back(itr - vbo.begin());
 			}
 		  }
 		}
-		mesh.iboSize = ibo.size() - mesh.iboOffset / sizeof(uint16_t);
+		for (int i = 0; i < materialCount; ++i) {
+		  mesh.materialList[i].iboOffset = ibo.size() * sizeof(uint16_t);
+		  mesh.materialList[i].iboSize = iboBufferPerMaterial[i].size();
+		  ibo.insert(ibo.end(), iboBufferPerMaterial[i].begin(), iboBufferPerMaterial[i].end());
+		}
 
 		if (bindPose.empty()) {
 		  if (FbxPose* pPose = pNode->GetScene()->GetPose(0)) {

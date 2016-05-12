@@ -1,0 +1,64 @@
+*** MSH file format ***
+
+MSH is the 3D mesh object binary file format.
+
+Author: tn_mai(mai.tanaka.cpper@gmail.com)
+Licence: The MIT licence.
+
+** Format **
+
+  char[3]           "MSH"
+  uint8_t           mesh count.
+  uint32_t          vbo offset by the top of file(32bit alignment).
+  uint32_t          vbo byte size(32bit alignment).
+  uint32_t          ibo byte size(32bit alignment).
+
+  [
+    uint8_t         mesh name length.
+    char[mesh name length] mesh name(without zero ternmination).
+    uint8_t         material count.
+    padding         (4 - (length + 2) % 4) % 4 byte.
+    [
+      uint32_t        ibo offset.
+      uint16_t        ibo size.
+      uint8_t         red
+      uint8_t         green
+      uint8_t         blue
+      uint8_t         alpha
+      uint8_t         metallic
+      uint8_t         roughness
+    ] x (material count)
+  ] x (mesh count)
+
+  uint8_t                          albedo texture name length.
+  char[albedo texture name length] albedo texture name(without zero ternmination).
+  uint8_t                          normal texture name length.
+  char[normal texture name length] normal texture name(without zero ternmination).
+  padding                          (4 - (texture name block size % 4) % 4 byte.
+
+  vbo               vbo data.
+  ibo               ibo data.
+  padding           (4 - (ibo byte size % 4) % 4 byte.
+
+  uint16_t          bone count.
+  uint16_t          animation count.
+
+  [
+    RotTrans        rotation and translation for the bind pose.
+    int32_t         parent bone index.
+  ] x (bone count)
+
+  [
+    uint8_t         animation name length.
+    char[24]        animation name.
+    bool            loop flag
+    uint16_t        key frame count.
+    float           total time.
+    [
+      float         time.
+      [
+        RotTrans    rotation and translation.
+      ] x (bone count)
+    ] x (key frame count)
+  ] x (animation count)
+
